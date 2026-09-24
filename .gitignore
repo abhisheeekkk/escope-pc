@@ -1,0 +1,14 @@
+build/
+.cache/
+.clangd/
+compile_commands.json
+*.o
+*.a
+*.so
+*.swp
+*.swo
+*~
+.DS_Store
+*.user
+*.pro.user
+CMakeUserPresets.json
