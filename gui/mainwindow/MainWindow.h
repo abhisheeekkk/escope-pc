@@ -4,6 +4,9 @@
 #include <memory>
 
 class QAction;
+class QComboBox;
+class QPushButton;
+class QMenu;
 class QDockWidget;
 class QLabel;
 class QTimer;

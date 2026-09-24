@@ -22,7 +22,7 @@ ChannelPanel::ChannelPanel(QWidget* parent) : QWidget(parent) {
     grid->addWidget(h1, 0, 0); grid->addWidget(h2, 0, 1); grid->addWidget(h3, 0, 2);
 
     // Colour alternates between two greens matching the waveform renderer
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < 8; ++i) {
         QString col = (i % 2 == 0) ? "#00E666" : "#00A676";
         rows_[i].name  = new QLabel(this);
         rows_[i].freq  = new QLabel("---", this);
@@ -40,7 +40,7 @@ ChannelPanel::ChannelPanel(QWidget* parent) : QWidget(parent) {
 }
 
 void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
-    int n = std::min(16, (int)escope::CaptureSession::MAX_DIGITAL_CH);
+    int n = std::min(8, (int)escope::CaptureSession::MAX_DIGITAL_CH);
     for (int i = 0; i < n; ++i) {
         const auto& info = session.digital_info(i);
         rows_[i].name->setText(QString::fromStdString(info.label));

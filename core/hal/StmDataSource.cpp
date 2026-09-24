@@ -100,6 +100,9 @@ void StmDataSource::reader_loop(CaptureSession* session)
     uint32_t pkt_count  = 0;
     uint8_t  expect_seq = 0;
 
+    /* Record start time in ns for wall-clock alignment */
+    auto t_start = std::chrono::steady_clock::now();
+
     while (running_) {
         ssize_t n = ::read(fd_, tmp, sizeof(tmp));
         if (n <= 0) {
@@ -143,8 +146,15 @@ void StmDataSource::reader_loop(CaptureSession* session)
                 uint8_t ch    = e[4] & 0x7F;
                 bool    level = (e[4] >> 7) & 1;
 
-                if (ch < CaptureSession::MAX_DIGITAL_CH)
-                    session->digital_buffer().push_edge((double)ts_ns, ch, level);
+                if (ch < CaptureSession::MAX_DIGITAL_CH) {
+                    /* Use wall-clock time so edges align with scrolling view.
+                     * STM32 timestamp is relative to capture start (starts at 0).
+                     * Wall-clock elapsed gives absolute position on screen. */
+                    auto now = std::chrono::steady_clock::now();
+                    double wall_ns = std::chrono::duration<double,std::nano>(
+                        now - t_start).count();
+                    session->digital_buffer().push_edge(wall_ns, ch, level);
+                }
             }
 
             buf.erase(buf.begin(), buf.begin() + pkt_len);

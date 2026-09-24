@@ -38,7 +38,20 @@ void main(){ fc=color; }
 // Digital-only: 16 channels fill the full widget height.
 // When ANALOG_ENABLED=1, the top 70% is analog and bottom 30% is digital.
 
-static constexpr int   DIG_CHANNELS = 16;   // max digital channels shown
+static constexpr int   DIG_CHANNELS = 8;   // max digital channels shown
+
+// Helper: count how many channels are currently visible
+static int visibleCount(const bool vis[8]) {
+    int n = 0;
+    for (int i = 0; i < DIG_CHANNELS; i++) if (vis[i]) n++;
+    return n ? n : 1;
+}
+// Helper: map channel index to its visible row (0-based)
+static int visibleRow(const bool vis[8], int ch) {
+    int row = 0;
+    for (int i = 0; i < ch; i++) if (vis[i]) row++;
+    return row;
+}
 static constexpr float DIG_TOP_FRAC = 0.0f; // digital area starts at top (digital-only)
 static constexpr float DIG_H_FRAC   = 1.0f; // digital area = full height
 
@@ -166,11 +179,12 @@ void WaveformWidget::buildGridVBO() {
     lines.insert(lines.end(), {0, H*0.70f, W, H*0.70f});
 #endif
 
-    // Digital channel row separators
+    // Digital channel row separators -- only for visible channels
     float digi_top = H * DIG_TOP_FRAC;
     float digi_h   = H * DIG_H_FRAC;
-    float row_h    = digi_h / DIG_CHANNELS;
-    for (int i = 0; i <= DIG_CHANNELS; ++i) {
+    int   n_vis    = visibleCount(ch_visible_);
+    float row_h    = digi_h / n_vis;
+    for (int i = 0; i <= n_vis; ++i) {
         float y = digi_top + i * row_h;
         lines.insert(lines.end(), {0, y, W, y});
     }
@@ -189,13 +203,14 @@ void WaveformWidget::paintGL() {
 
     // Rolling follow  --  use digital buffer time range (no analog in digital-only)
     if (follow_latest_) {
-#if ANALOG_ENABLED
-        auto [t0,t1] = session_->analog_buffer(0).time_range_ns();
-#else
-        auto [t0,t1] = session_->digital_buffer().time_range_ns();
-#endif
-        if (t1 > 0.0)
-            time_offset_ns_ = std::max(0.0, t1 - time_per_div_ns_ * HDIVS * 0.95);
+        /* Continuous wall-clock scrolling -- runs every 33ms from display timer.
+         * capture_start_ms_ is set when capture begins (resetCaptureTime).
+         * elapsed_ns is the time since capture start -- view right edge tracks it. */
+        if (capture_start_ms_ == 0)
+            capture_start_ms_ = QDateTime::currentMSecsSinceEpoch();
+        double elapsed_ns = (double)(QDateTime::currentMSecsSinceEpoch()
+                                   - capture_start_ms_) * 1000000.0;
+        time_offset_ns_ = std::max(0.0, elapsed_ns - time_per_div_ns_ * HDIVS);
     }
 
     drawGrid();
@@ -373,9 +388,13 @@ void WaveformWidget::drawOverlay() {
     float row_h    = digi_h / DIG_CHANNELS;
     int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
 
+    int   n_vis_ov  = visibleCount(ch_visible_);
+    float row_h_vis = digi_h / n_vis_ov;
     for (int ch = 0; ch < n_dig; ++ch) {
-        float row_top  = digi_top + ch * row_h;
-        float row_mid  = row_top + row_h * 0.5f;
+        if (!ch_visible_[ch]) continue;
+        int   vr      = visibleRow(ch_visible_, ch);
+        float row_top = digi_top + vr * row_h_vis;
+        float row_mid = row_top + row_h_vis * 0.5f;
 
         // Channel label (D0-D7)
         p.setFont(QFont("Monospace", 8, QFont::Bold));
@@ -396,11 +415,11 @@ void WaveformWidget::drawOverlay() {
     drawCursors(p);
     drawMeasurementPanel(p);
 
-    // Follow mode indicator
+    // Show PAUSED only when user explicitly panned (right-click drag)
     if (!follow_latest_) {
         p.setFont(QFont("Monospace", 8));
         p.setPen(QColor(200, 150, 50));
-        p.drawText(QRect(W-180, 4, 176, 14), Qt::AlignRight, "PAUSED  press L to follow");
+        p.drawText(QRect(W-120, 4, 116, 14), Qt::AlignRight, "PAUSED  L=live");
     }
 
     // Help hint
@@ -453,15 +472,16 @@ void WaveformWidget::drawCursors(QPainter& p) {
         p.drawText(tbox, Qt::AlignCenter, fmt_t(c.t_ns));
 
         // Logic level for each digital channel at this cursor time
-        float digi_top = H * DIG_TOP_FRAC;
-        float digi_h   = H * DIG_H_FRAC;
-        float row_h    = digi_h / DIG_CHANNELS;
+        float digi_top  = H * DIG_TOP_FRAC;
+        float digi_h    = H * DIG_H_FRAC;
+        int   n_vis_c   = visibleCount(ch_visible_);
+        float row_h     = digi_h / n_vis_c;
         int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
-
         for (int ch = 0; ch < n_dig; ++ch) {
+            if (!ch_visible_[ch]) continue;
             if (!session_->digital_info(ch).enabled) continue;
             bool lvl = session_->digital_buffer().level_at(ch, c.t_ns);
-            float row_mid = digi_top + ch * row_h + row_h * 0.5f;
+            float row_mid = digi_top + visibleRow(ch_visible_,ch) * row_h + row_h * 0.5f;
             p.setPen(Qt::NoPen);
             p.setBrush(lvl ? QColor(cc.red(),cc.green(),cc.blue(),160) : QColor(0,0,0,0));
             if (lvl) p.drawEllipse(QPointF(x, row_mid), 3, 3);
@@ -689,10 +709,12 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
         int hit = cursorHitTest(mx, my);
         if (hit >= 0) { removeCursor(hit); return; }
         // Right-click empty area = pan
+        follow_latest_ = false;
         dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_;
     }
 
     if (e->button() == Qt::MiddleButton) {
+        follow_latest_ = false;
         dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_;
     }
 }
@@ -711,7 +733,6 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
     if (dragging_) {
         double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
         time_offset_ns_ = std::max(0.0, drag_t0_ + (drag_start_.x()-e->pos().x())/ppns);
-        follow_latest_  = false;
         update();
     }
 }
@@ -721,10 +742,40 @@ void WaveformWidget::mouseReleaseEvent(QMouseEvent*) {
 }
 
 void WaveformWidget::wheelEvent(QWheelEvent* e) {
-    // Digital-only: scroll always zooms time axis (no per-channel V/div)
-    double f = (e->angleDelta().y() > 0) ? 0.75 : 1.333;
+    /* Fixed preset time/div steps -- each scroll step moves one preset */
+    static const double PRESETS[] = {
+        100,          /* 100 ns  */
+        500,          /* 500 ns  */
+        1000,         /* 1 us    */
+        5000,         /* 5 us    */
+        10000,        /* 10 us   */
+        50000,        /* 50 us   */
+        100000,       /* 100 us  */
+        500000,       /* 500 us  */
+        1000000,      /* 1 ms    */
+        5000000,      /* 5 ms    */
+        10000000,     /* 10 ms   */
+        50000000,     /* 50 ms   */
+        100000000,    /* 100 ms  */
+        500000000,    /* 500 ms  */
+        1000000000,   /* 1 s     */
+        5000000000,   /* 5 s     */
+        10000000000,  /* 10 s    */
+        50000000000,  /* 50 s    */
+    };
+    static const int N = sizeof(PRESETS)/sizeof(PRESETS[0]);
+
+    /* Find current preset index */
+    int idx = 8; /* default 1 ms */
+    for (int i = 0; i < N-1; i++) {
+        if (time_per_div_ns_ <= PRESETS[i] * 1.01) { idx = i; break; }
+    }
+
+    if (e->angleDelta().y() > 0) idx = std::max(0, idx - 1);
+    else                          idx = std::min(N-1, idx + 1);
+
     double tc = pixelToTime(e->position().x());
-    time_per_div_ns_ = std::clamp(time_per_div_ns_ * f, 1.0, 1e12);
+    time_per_div_ns_ = PRESETS[idx];
     time_offset_ns_  = std::max(0.0, tc - e->position().x()/width()*time_per_div_ns_*HDIVS);
     update();
 }
@@ -753,8 +804,11 @@ void WaveformWidget::zoomFit() {
     if (!session_) return;
     auto [t0,t1] = session_->digital_buffer().time_range_ns();
     if (t1 <= t0) return;
-    time_per_div_ns_ = std::min((t1-t0)/HDIVS, 10e6);
-    time_offset_ns_  = std::max(0.0, t1 - time_per_div_ns_*HDIVS);
+    /* Show full range from t0 to t1, starting at t0 */
+    double range = t1 - t0;
+    time_per_div_ns_ = std::max(range / HDIVS, 100.0);
+    time_offset_ns_  = t0;
+    follow_latest_   = false;
     update();
 }
 

@@ -22,6 +22,9 @@
 #include <QDockWidget>
 #include <QAction>
 #include <QLabel>
+#include <QComboBox>
+#include <QPushButton>
+#include <QMenu>
 #include <QTimer>
 #include <QSplitter>
 #include <QMessageBox>
@@ -201,6 +204,66 @@ void MainWindow::setupToolBar() {
     connect(act_single_, &QAction::triggered, this, &MainWindow::onTriggerSingle);
     connect(act_auto_,   &QAction::triggered, this, &MainWindow::onTriggerAuto);
 
+    /* ---- Time/div dropdown ---- */
+    tb->addSeparator();
+    auto* tdiv_label = new QLabel("  T/div:", tb);
+    tdiv_label->setStyleSheet("color:#aaa;");
+    tb->addWidget(tdiv_label);
+
+    auto* tdiv_combo = new QComboBox(tb);
+    tdiv_combo->setStyleSheet("color:#eee; background:#333; min-width:80px;");
+    const QStringList tdiv_labels = {
+        "100 ns","500 ns","1 us","5 us","10 us","50 us",
+        "100 us","500 us","1 ms","5 ms","10 ms","50 ms",
+        "100 ms","500 ms","1 s","5 s","10 s","50 s"
+    };
+    const QList<double> tdiv_values = {
+        100,500,1e3,5e3,10e3,50e3,
+        100e3,500e3,1e6,5e6,10e6,50e6,
+        100e6,500e6,1e9,5e9,10e9,50e9
+    };
+    for (const auto& s : tdiv_labels) tdiv_combo->addItem(s);
+    tdiv_combo->setCurrentIndex(8); /* 1 ms default */
+    tb->addWidget(tdiv_combo);
+    connect(tdiv_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        this, [this, tdiv_values](int idx) {
+            if (waveform_widget_) waveform_widget_->setTimePerDiv(tdiv_values[idx]);
+        });
+
+    /* ---- Channel selector ---- */
+    tb->addSeparator();
+    auto* ch_label = new QLabel("  Ch:", tb);
+    ch_label->setStyleSheet("color:#aaa;");
+    tb->addWidget(ch_label);
+
+    auto* ch_btn = new QPushButton("Select", tb);
+    ch_btn->setStyleSheet("color:#eee; background:#333; padding:2px 6px;");
+    tb->addWidget(ch_btn);
+
+    auto* ch_menu = new QMenu(ch_btn);
+    ch_menu->setStyleSheet("color:#eee; background:#222;");
+    for (int i = 0; i < 8; i++) {
+        auto* act = ch_menu->addAction(QString("D%1").arg(i));
+        act->setCheckable(true);
+        act->setChecked(true);
+        connect(act, &QAction::toggled, this, [this, i](bool checked) {
+            if (waveform_widget_) waveform_widget_->setChannelVisible(i, checked);
+        });
+    }
+    /* Select All / None */
+    ch_menu->addSeparator();
+    auto* all_act  = ch_menu->addAction("All");
+    auto* none_act = ch_menu->addAction("None");
+    connect(all_act,  &QAction::triggered, this, [ch_menu]() {
+        for (auto* a : ch_menu->actions()) if (a->isCheckable()) a->setChecked(true);
+    });
+    connect(none_act, &QAction::triggered, this, [ch_menu]() {
+        for (auto* a : ch_menu->actions()) if (a->isCheckable()) a->setChecked(false);
+    });
+    connect(ch_btn, &QPushButton::clicked, ch_btn, [ch_menu, ch_btn]() {
+        ch_menu->exec(ch_btn->mapToGlobal(QPoint(0, ch_btn->height())));
+    });
+
     // STM32 hardware toggle
     tb->addSeparator();
     auto* act_hw = tb->addAction("Connect STM32");
@@ -223,7 +286,7 @@ void MainWindow::setupToolBar() {
             source_->start(*session_);
             capturing_ = true;
             display_frame_ = 0;
-            waveform_widget_->setFollowLatest(true);
+            waveform_widget_->resetCaptureTime();
             act_stop_->setEnabled(true);
             act_start_->setEnabled(false);
             act_hw->setText("Disconnect STM32");
@@ -283,10 +346,10 @@ void MainWindow::onStartCapture() {
     source_->start(*session_);
     capturing_     = true;
     display_frame_ = 0;
-    waveform_widget_->setFollowLatest(true);
+    waveform_widget_->resetCaptureTime();
     act_start_->setEnabled(false);
     act_stop_->setEnabled(true);
-    status_label_->setText("Capturing -- Simulated 16ch  50 MS/s  [Rolling]");
+    status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Rolling]");
 }
 
 void MainWindow::onStopCapture() {
@@ -308,9 +371,9 @@ void MainWindow::onUpdateDisplay() {
     // Status bar
     if (capturing_ && display_frame_ % 10 == 0) {
         if (waveform_widget_->followLatest())
-            status_label_->setText("Capturing -- Simulated 16ch  50 MS/s  [Rolling]");
+            status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Rolling]");
         else
-            status_label_->setText("Capturing -- Simulated 16ch  50 MS/s  [Paused -- L to resume]");
+            status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Paused -- L to resume]");
     }
 
     // Panels at ~6 Hz

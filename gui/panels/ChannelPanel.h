@@ -12,5 +12,5 @@ public:
     void updateFrom(const escope::CaptureSession& session);
 private:
     struct Row { class QLabel* name; class QLabel* freq; class QLabel* level; };
-    Row rows_[16];
+    Row rows_[8];
 };

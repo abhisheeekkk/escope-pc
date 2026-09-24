@@ -1,4 +1,5 @@
 #pragma once
+#include <QDateTime>
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
@@ -81,8 +82,12 @@ public:
     int  measTarget() const { return meas_target_; }
 
     // ── Rolling mode ──────────────────────────────────────────────────────────
-    void setFollowLatest(bool f) { follow_latest_ = f; }
-    bool followLatest()    const { return follow_latest_; }
+    void setFollowLatest(bool f)   { follow_latest_ = f; update(); }
+    bool followLatest()    const   { return follow_latest_; }
+    void setTimePerDiv(double ns)  { time_per_div_ns_ = ns; update(); }
+    void resetCaptureTime()        { capture_start_ms_ = QDateTime::currentMSecsSinceEpoch(); time_offset_ns_ = 0; follow_latest_ = true; }
+    void setChannelVisible(int ch, bool v) { if(ch>=0&&ch<8){ch_visible_[ch]=v; update();} }
+    bool channelVisible(int ch)    const   { return (ch>=0&&ch<8) ? ch_visible_[ch] : false; }
 
     QImage grabScreenshot();
 
@@ -153,5 +158,7 @@ private:
     double drag_t0_   = 0.0;
 
     bool follow_latest_ = true;
+    bool ch_visible_[8]  = {true,true,true,true,true,true,true,true};
+    qint64 capture_start_ms_ = 0;
     const escope::CaptureSession* session_ = nullptr;
 };
