@@ -28,6 +28,11 @@
 #include <QTimer>
 #include <QSplitter>
 #include <QMessageBox>
+#include <QLineEdit>
+#include <QDoubleValidator>
+#include <QDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
 #include <thread>
 
 MainWindow::MainWindow(QWidget* parent)
@@ -222,7 +227,9 @@ void MainWindow::setupToolBar() {
         100e3,500e3,1e6,5e6,10e6,50e6,
         100e6,500e6,1e9,5e9,10e9,50e9
     };
+    const int custom_idx = tdiv_labels.size(); /* "Custom..." lives past every preset */
     for (const auto& s : tdiv_labels) tdiv_combo->addItem(s);
+    tdiv_combo->addItem("Custom...");
     tdiv_combo->setCurrentIndex(10); /* 1 ms default */
     tb->addWidget(tdiv_combo);
     connect(waveform_widget_, &WaveformWidget::timeDivChanged,
@@ -239,9 +246,60 @@ void MainWindow::setupToolBar() {
         });
 
     connect(tdiv_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-        this, [this, tdiv_values](int idx) {
-            if (waveform_widget_) waveform_widget_->setTimePerDiv(tdiv_values[idx]);
+        this, [this, tdiv_combo, tdiv_values, custom_idx](int idx) {
+            if (!waveform_widget_) return;
+            if (idx != custom_idx) { waveform_widget_->setTimePerDiv(tdiv_values[idx]); return; }
+
+            // "Custom..." selected -- pop a small dialog for value + unit.
+            QDialog dlg(this);
+            dlg.setWindowTitle("Custom T/div");
+            auto* form = new QFormLayout(&dlg);
+
+            auto* value_edit = new QLineEdit(&dlg);
+            value_edit->setValidator(new QDoubleValidator(0.001, 1e9, 6, value_edit));
+            value_edit->setText("300");
+            form->addRow("Value:", value_edit);
+
+            auto* unit_combo = new QComboBox(&dlg);
+            unit_combo->addItems({"ns", "us", "ms", "s"});
+            unit_combo->setCurrentIndex(0);
+            form->addRow("Unit:", unit_combo);
+
+            auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+            form->addRow(buttons);
+            connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+            connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+            value_edit->setFocus();
+            value_edit->selectAll();
+
+            if (dlg.exec() == QDialog::Accepted) {
+                bool ok = false;
+                double value = value_edit->text().toDouble(&ok);
+                static const double unit_ns[] = {1.0, 1e3, 1e6, 1e9}; // ns, us, ms, s
+                if (ok && value > 0.0)
+                    waveform_widget_->setTimePerDiv(value * unit_ns[unit_combo->currentIndex()]);
+            }
+            // Leaving "Custom..." selected would re-open the dialog the next
+            // time this index fires; timeDivChanged (emitted by
+            // setTimePerDiv) moves the combo back to the nearest matching
+            // preset. If the dialog was cancelled, do that ourselves so the
+            // combo doesn't sit stuck on "Custom...".
+            if (tdiv_combo->currentIndex() == custom_idx) {
+                QSignalBlocker blocker(tdiv_combo);
+                tdiv_combo->setCurrentIndex(10);
+            }
         });
+
+    /* ---- Cursors ---- */
+    tb->addSeparator();
+    auto* act_add_cursor   = tb->addAction("Add Cursor");
+    auto* act_clear_cursor = tb->addAction("Clear Cursors");
+    connect(act_add_cursor, &QAction::triggered, this, [this]() {
+        if (waveform_widget_) waveform_widget_->addCursorAtCenter();
+    });
+    connect(act_clear_cursor, &QAction::triggered, this, [this]() {
+        if (waveform_widget_) waveform_widget_->clearCursors();
+    });
 
     /* ---- Channel selector ---- */
     tb->addSeparator();

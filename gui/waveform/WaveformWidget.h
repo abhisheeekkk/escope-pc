@@ -73,6 +73,9 @@ public:
     // ── Cursor API ────────────────────────────────────────────────────────────
     int  addVerticalCursor(double t_ns);
     int  addHorizontalCursor(float v_volts, int ch = 0);
+    /// Drop a vertical cursor at the center of the currently visible window
+    /// (used by the toolbar "Add Cursor" button, replacing click-to-drop).
+    int  addCursorAtCenter();
     void removeCursor(int idx);
     void clearCursors();
     void setMeasurementPair(int ref, int target);

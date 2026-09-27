@@ -638,6 +638,11 @@ int WaveformWidget::activeCursorCount() const {
         [](const WaveformCursor& c){ return c.active; });
 }
 
+int WaveformWidget::addCursorAtCenter() {
+    double center_ns = time_offset_ns_ + (time_per_div_ns_ * HDIVS) / 2.0;
+    return addVerticalCursor(center_ns);
+}
+
 int WaveformWidget::addVerticalCursor(double t_ns) {
     // Reuse inactive slot first
     for (int i = 0; i < (int)cursors_.size(); ++i) {
@@ -731,10 +736,8 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
             }
             update(); return;
         }
-
-        // Place new vertical cursor
-        follow_latest_ = false;
-        addVerticalCursor(pixelToTime(mx));
+        // Clicking empty area no longer drops a cursor -- use the "Add
+        // Cursor" toolbar button instead (addCursorAtCenter()).
         return;
     }
 
@@ -818,6 +821,7 @@ void WaveformWidget::setTimePerDiv(double ns) {
      * the view always sits over real data. */
     clampTimeOffset();
     update();
+    emit timeDivChanged(time_per_div_ns_);
 }
 
 void WaveformWidget::clampTimeOffset() {
