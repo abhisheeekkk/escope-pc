@@ -92,6 +92,12 @@ public:
     void setChannelVisible(int ch, bool v) { if(ch>=0&&ch<8){ch_visible_[ch]=v; update();} }
     bool channelVisible(int ch)    const   { return (ch>=0&&ch<8) ? ch_visible_[ch] : false; }
 
+    /// Measure the period of the first visible channel from its most
+    /// recent edges and set T/div so a few cycles fit across the screen.
+    /// Used by the toolbar's AUTO button. Returns false if there isn't
+    /// enough recent edge data on any visible channel to measure a period.
+    bool autoScaleTimeDiv();
+
     QImage grabScreenshot();
 
 signals:
@@ -163,7 +169,10 @@ private:
     double drag_t0_   = 0.0;
 
     bool follow_latest_ = true;
-    bool ch_visible_[8]  = {true,true,true,true,true,true,true,true};
+    // Only D0 shown by default -- every additional visible channel means
+    // more edges decoded into GL vertices and drawn each frame, so start
+    // minimal and let the user opt into more via the "Select" toolbar menu.
+    bool ch_visible_[8]  = {true,false,false,false,false,false,false,false};
     /* Rectangle zoom */
     bool   rubber_band_active_ = false;
     QPoint rubber_band_start_;

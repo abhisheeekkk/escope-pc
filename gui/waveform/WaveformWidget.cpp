@@ -242,9 +242,14 @@ void WaveformWidget::paintGL() {
     double view_start = time_offset_ns_;
     double view_end   = time_offset_ns_ + time_per_div_ns_ * HDIVS;
     dig_snap_ = session_->digital_buffer().edges_in_range(view_start, view_end);
-    int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
+    // Gate on ch_visible_ (the toolbar "Select" checkboxes the user actually
+    // toggles), not just digital_info(ch).enabled -- previously this loop
+    // ignored ch_visible_ entirely, so every channel was decoded into GL
+    // vertices and drawn regardless of what was unchecked in the channel
+    // selector, defeating the point of hiding channels to cut processing.
+    int n_dig = std::min({(int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS, 8});
     for (int ch = 0; ch < n_dig; ++ch)
-        if (session_->digital_info(ch).enabled)
+        if (session_->digital_info(ch).enabled && ch_visible_[ch])
             drawDigitalChannel(ch);
 
     drawOverlay();
@@ -641,6 +646,42 @@ int WaveformWidget::activeCursorCount() const {
 int WaveformWidget::addCursorAtCenter() {
     double center_ns = time_offset_ns_ + (time_per_div_ns_ * HDIVS) / 2.0;
     return addVerticalCursor(center_ns);
+}
+
+bool WaveformWidget::autoScaleTimeDiv() {
+    if (!session_) return false;
+
+    // Prefer the first visible channel (what the user's actually looking
+    // at); fall back to D0 if nothing is currently shown.
+    int ch = -1;
+    for (int i = 0; i < 8; i++) if (ch_visible_[i]) { ch = i; break; }
+    if (ch < 0) ch = 0;
+
+    // Measure the median rising-to-rising period from the most recent
+    // edges -- same approach ChannelPanel/MeasurementPanel use for their
+    // frequency readouts, so this agrees with what's shown there.
+    auto edges = session_->digital_buffer().last_edges(ch, 50);
+    std::vector<double> periods;
+    double prev_rise = -1;
+    for (const auto& e : edges) {
+        if (e.rising) {
+            if (prev_rise > 0) periods.push_back(e.timestamp_ns - prev_rise);
+            prev_rise = e.timestamp_ns;
+        }
+    }
+    if (periods.size() < 2) return false;
+    std::sort(periods.begin(), periods.end());
+    double period_ns = periods[periods.size() / 2];
+    if (!(period_ns > 0.0)) return false;
+
+    // Fit a handful of cycles across the full screen width so the
+    // waveform's shape is actually legible, rather than either a single
+    // edge (zoomed in too far) or a solid-looking blur (zoomed out too
+    // far).
+    constexpr double CYCLES_ACROSS_SCREEN = 3.0;
+    double ns = std::max(1.0, period_ns * CYCLES_ACROSS_SCREEN / HDIVS);
+    setTimePerDiv(ns);
+    return true;
 }
 
 int WaveformWidget::addVerticalCursor(double t_ns) {

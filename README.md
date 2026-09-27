@@ -15,7 +15,7 @@ EmbeddedScope is a PC application that combines:
 - **Protocol decoder** — UART (working), SPI/I2C/CAN (Phase 3)
 - **Unified timeline** — all signals on one shared nanosecond time base
 - **Simulated source** — full GUI development without any hardware
-- **STM32 hardware source** — 8ch @ 48 MS/s triggered captures over USB CDC-ACM (`/dev/ttyACM*`)
+- **eScope hardware source** — 8ch @ 48 MS/s triggered captures over USB CDC-ACM (`/dev/ttyACM*`), STM32-based
 
 ---
 
@@ -114,7 +114,7 @@ cd build && ctest --output-on-failure
 - [x] Session load
 
 ### Phase 2 — Real hardware acquisition
-- [x] STM32 USB firmware — 8ch @ 48 MS/s raw sample bursts over CDC-ACM (`StmDataSource`)
+- [x] eScope (STM32) USB firmware — 8ch @ 48 MS/s raw sample bursts over CDC-ACM (`StmDataSource`)
 - [x] Hardware trigger (trigger sample index reported per burst)
 - [ ] USB 3 bulk transfer
 - [ ] KissFFT integration (replace Phase 1 DFT)
@@ -142,14 +142,14 @@ cd build && ctest --output-on-failure
 
 ---
 
-## STM32 hardware source
+## eScope hardware source
 
-`StmDataSource` reads triggered burst frames from the STM32 firmware over USB
-CDC-ACM (115200 baud). Each frame is a 24-byte header (magic `0xE7`, version,
-flags, sample rate, sample count, trigger sample index, sequence number)
-followed by that many raw sample bytes, one bit per digital channel. The GUI
-toggles between this and the simulated source from the toolbar's
-"Connect STM32" button; `enumerate()` looks for `/dev/ttyACM*`.
+`StmDataSource` reads triggered burst frames from the eScope (STM32) firmware
+over USB CDC-ACM (115200 baud). Each frame is a 24-byte header (magic `0xE7`,
+version, flags, sample rate, sample count, trigger sample index, sequence
+number) followed by that many raw sample bytes, one bit per digital channel.
+The GUI toggles between this and the simulated source from the toolbar's
+"Connect eScope" button; `enumerate()` looks for `/dev/ttyACM*`.
 
 ## Waveform view controls
 
@@ -161,6 +161,15 @@ toggles between this and the simulated source from the toolbar's
   delete it
 - **Pan/zoom** — right-drag or middle-drag to pan, scroll to pan (T/div is
   never changed by scrolling), `L` to resume following live data
+- **Channels** — only D0 is shown by default; use the toolbar's "Select"
+  menu to show/hide channels (fewer visible channels means less per-frame
+  decode/render work)
+- **AUTO** — autosets T/div by measuring the visible channel's period from
+  its most recent edges and fitting a few cycles across the screen
+- **SINGLE** — runs continuously for a ~1s settle delay, then arms
+  single-shot mode so the next trigger after that grabs one capture and
+  stops; **Run** always resumes continuous capture regardless of a prior
+  SINGLE press
 
 ---
 

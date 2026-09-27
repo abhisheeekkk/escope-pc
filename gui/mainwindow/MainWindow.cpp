@@ -192,6 +192,9 @@ void MainWindow::setupToolBar() {
     auto* tb = addToolBar("Capture");
     tb->setMovable(false);
 
+    // Momentary buttons, not persistent toggles -- AUTO/SINGLE fire an
+    // action (autoset T/div, arm a single capture) rather than representing
+    // a mode that should stay visually highlighted afterwards.
     act_auto_   = tb->addAction("AUTO");
     act_single_ = tb->addAction("SINGLE");
     tb->addSeparator();
@@ -199,10 +202,6 @@ void MainWindow::setupToolBar() {
     act_stop_   = tb->addAction("Stop");
     act_stop_->setEnabled(false);
     tb->addSeparator();
-
-    auto* trig_label = new QLabel("  Trigger: ch7 (10kHz)", tb);
-    trig_label->setStyleSheet("color:#888;");
-    tb->addWidget(trig_label);
 
     connect(act_start_,  &QAction::triggered, this, &MainWindow::onStartCapture);
     connect(act_stop_,   &QAction::triggered, this, &MainWindow::onStopCapture);
@@ -316,7 +315,7 @@ void MainWindow::setupToolBar() {
     for (int i = 0; i < 8; i++) {
         auto* act = ch_menu->addAction(QString("D%1").arg(i));
         act->setCheckable(true);
-        act->setChecked(true);
+        act->setChecked(i == 0); /* only D0 shown by default -- see ch_visible_ */
         connect(act, &QAction::toggled, this, [this, i](bool checked) {
             if (waveform_widget_) waveform_widget_->setChannelVisible(i, checked);
         });
@@ -337,7 +336,7 @@ void MainWindow::setupToolBar() {
 
     // STM32 hardware toggle
     tb->addSeparator();
-    auto* act_hw = tb->addAction("Connect STM32");
+    auto* act_hw = tb->addAction("Connect eScope");
     act_hw->setCheckable(true);
     connect(act_hw, &QAction::toggled, this, [this, act_hw](bool checked) {
         if (checked) {
@@ -346,7 +345,7 @@ void MainWindow::setupToolBar() {
             auto stm = std::make_unique<escope::StmDataSource>();
             if (stm->enumerate().empty()) {
                 act_hw->setChecked(false);
-                status_label_->setText("STM32 not found -- check /dev/ttyACM*");
+                status_label_->setText("eScope not found -- check /dev/ttyACM*");
                 return;
             }
             source_ = std::move(stm);
@@ -360,7 +359,7 @@ void MainWindow::setupToolBar() {
             waveform_widget_->resetCaptureTime();
             act_stop_->setEnabled(true);
             act_start_->setEnabled(false);
-            act_hw->setText("Disconnect STM32");
+            act_hw->setText("Disconnect eScope");
             status_label_->setText("Connected to STM32 EmbeddedScope");
         } else {
             source_->stop();
@@ -373,7 +372,7 @@ void MainWindow::setupToolBar() {
             connectSource();
             act_start_->setEnabled(true);
             act_stop_->setEnabled(false);
-            act_hw->setText("Connect STM32");
+            act_hw->setText("Connect eScope");
             status_label_->setText("Simulated device");
         }
     });
@@ -405,13 +404,27 @@ void MainWindow::connectSource() {
     source_->set_trigger_callback([this](const escope::TriggerEvent& evt){
         Q_UNUSED(evt);
         QMetaObject::invokeMethod(this, [this]{
-            status_label_->setText("Triggered");
+            bool single = session_->trigger().config().mode == escope::TriggerMode::Single;
+            status_label_->setText(single ? "Triggered -- single capture stopped"
+                                           : "Triggered");
+            // SINGLE mode: capture exactly one triggered burst, then stop.
+            // Previously AUTO/SINGLE only recorded a mode nobody ever acted
+            // on, so SINGLE never actually stopped anything.
+            if (single && capturing_) onStopCapture();
         }, Qt::QueuedConnection);
     });
     source_->open();
 }
 
 void MainWindow::onStartCapture() {
+    // Run always means continuous capture until Stop, regardless of
+    // whatever mode a previous SINGLE press left behind -- otherwise
+    // pressing Run after a single-shot capture would immediately arm
+    // and auto-stop again on the very next trigger.
+    escope::TriggerConfig cfg = session_->trigger().config();
+    cfg.mode = escope::TriggerMode::Auto;
+    session_->trigger().set_config(cfg);
+
     session_->reset();
     source_->configure(*session_);
     source_->start(*session_);
@@ -461,14 +474,51 @@ void MainWindow::onUpdateDisplay() {
 }
 
 void MainWindow::onTriggerSingle() {
-    escope::TriggerConfig cfg = session_->trigger().config();
-    cfg.mode = escope::TriggerMode::Single;
-    session_->trigger().set_config(cfg);
-    status_label_->setText("Single trigger armed");
+    // SINGLE is self-contained: run continuously for a moment first --
+    // arming single-shot mode immediately would usually stop after the
+    // very next burst (bursts arrive fast), before there's anything useful
+    // on screen. Instead start (or keep) running normally, then arm
+    // single-shot mode after a short settle delay so the *next* trigger
+    // after that stops it -- the trigger callback in connectSource() checks
+    // the mode and calls onStopCapture() the first time it fires.
+    if (!capturing_) {
+        escope::TriggerConfig cfg = session_->trigger().config();
+        cfg.mode = escope::TriggerMode::Auto;
+        session_->trigger().set_config(cfg);
+
+        session_->reset();
+        source_->configure(*session_);
+        source_->start(*session_);
+        capturing_     = true;
+        display_frame_ = 0;
+        waveform_widget_->resetCaptureTime();
+        act_start_->setEnabled(false);
+        act_stop_->setEnabled(true);
+    }
+    status_label_->setText("Single -- running, will grab one capture shortly");
+
+    static constexpr int SINGLE_SETTLE_MS = 1000;
+    QTimer::singleShot(SINGLE_SETTLE_MS, this, [this]() {
+        if (!capturing_) return; // Stop was pressed during the settle delay
+        escope::TriggerConfig cfg = session_->trigger().config();
+        cfg.mode = escope::TriggerMode::Single;
+        session_->trigger().set_config(cfg);
+        status_label_->setText("Single trigger armed -- waiting for one capture");
+    });
 }
 
 void MainWindow::onTriggerAuto() {
     escope::TriggerConfig cfg = session_->trigger().config();
     cfg.mode = escope::TriggerMode::Auto;
     session_->trigger().set_config(cfg);
+
+    // AUTO also autosets T/div from the signal itself, like a scope's
+    // "Autoset" -- measure the visible channel's period from recent edges
+    // and fit a few cycles across the screen.
+    if (waveform_widget_) {
+        if (waveform_widget_->autoScaleTimeDiv())
+            status_label_->setText("Auto -- T/div scaled to signal frequency");
+        else
+            status_label_->setText("Auto -- not enough signal to measure frequency yet");
+    }
 }
