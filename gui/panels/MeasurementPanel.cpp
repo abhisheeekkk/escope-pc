@@ -70,7 +70,10 @@ void MeasurementPanel::updateFrom(const escope::CaptureSession& session) {
     const auto& info = session.digital_info(ch);
     lbl_ch_->setText(QString::fromStdString(info.label));
 
-    auto edges = session.digital_buffer().edges_for_channel(ch);
+    // Only the most recent ~100 edges are ever used below -- avoid copying
+    // the channel's entire retained history (which can be millions of
+    // edges) just to look at the tail of it.
+    auto edges = session.digital_buffer().last_edges(ch, 100);
 
     if (edges.size() < 2) {
         lbl_freq_  ->setText("---");

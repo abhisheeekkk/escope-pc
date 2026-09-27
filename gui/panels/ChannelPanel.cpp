@@ -41,12 +41,20 @@ ChannelPanel::ChannelPanel(QWidget* parent) : QWidget(parent) {
 
 void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
     int n = std::min(8, (int)escope::CaptureSession::MAX_DIGITAL_CH);
+    // Same instant for every channel's level readout -- hoisted out of the
+    // loop instead of recomputed (each call was an O(history) scan) once
+    // per channel.
+    auto [t0, t1] = session.digital_buffer().time_range_ns();
+    (void)t0;
     for (int i = 0; i < n; ++i) {
         const auto& info = session.digital_info(i);
         rows_[i].name->setText(QString::fromStdString(info.label));
 
-        // Estimate frequency from edges
-        auto edges = session.digital_buffer().edges_for_channel(i);
+        // Estimate frequency from the most recent edges only -- this panel
+        // never looks further back than that, so there's no reason to copy
+        // (and previously, also uselessly re-sort via all_edges() below) the
+        // channel's entire history every ~6 Hz tick.
+        auto edges = session.digital_buffer().last_edges(i, 40);
         if (edges.size() >= 4) {
             // Collect rising-edge intervals (last 20 at most)
             std::vector<double> periods;
@@ -79,8 +87,6 @@ void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
         }
 
         // Current level
-        auto all = session.digital_buffer().all_edges();
-        auto [t0, t1] = session.digital_buffer().time_range_ns();
         bool lvl = session.digital_buffer().level_at(i, t1);
         rows_[i].level->setText(lvl ? "1" : "0");
     }

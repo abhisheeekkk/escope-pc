@@ -12,6 +12,7 @@
 #endif
 
 #include <QMouseEvent>
+#include <QMenu>
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QPainter>
@@ -203,14 +204,16 @@ void WaveformWidget::paintGL() {
 
     // Rolling follow  --  use digital buffer time range (no analog in digital-only)
     if (follow_latest_) {
-        /* Continuous wall-clock scrolling -- runs every 33ms from display timer.
-         * capture_start_ms_ is set when capture begins (resetCaptureTime).
-         * elapsed_ns is the time since capture start -- view right edge tracks it. */
-        if (capture_start_ms_ == 0)
-            capture_start_ms_ = QDateTime::currentMSecsSinceEpoch();
-        double elapsed_ns = (double)(QDateTime::currentMSecsSinceEpoch()
-                                   - capture_start_ms_) * 1000000.0;
-        time_offset_ns_ = std::max(0.0, elapsed_ns - time_per_div_ns_ * HDIVS);
+        /* Anchor the right edge of the view to the newest timestamp actually
+         * received, not to real wall-clock "now". Bursts only get decoded
+         * (and their edges timestamped/pushed) once fully received, and that
+         * can lag noticeably behind wall-clock time depending on the link.
+         * Anchoring to wall-clock "now" left a growing empty gap on the
+         * right of the screen for however far behind the latest burst was;
+         * anchoring to the data's own latest timestamp means the view is
+         * always fully populated up to whatever has actually arrived. */
+        auto [t0, t1] = session_->digital_buffer().time_range_ns();
+        time_offset_ns_ = std::max(0.0, t1 - time_per_div_ns_ * HDIVS);
     }
 
     drawGrid();
@@ -230,7 +233,15 @@ void WaveformWidget::paintGL() {
 #endif
 
     // Digital  --  all channels
-    dig_snap_ = session_->digital_buffer().all_edges();
+    // Only the edges inside (or bordering) the visible window are ever drawn
+    // (see drawDigitalChannel), and the initial level at the window's left
+    // edge is already resolved via level_at(). Snapshotting the whole
+    // capture history here made every frame's cost grow with total capture
+    // length, which stalls the UI once a continuous capture accumulates a
+    // large number of edges (e.g. dense per-sample bursts).
+    double view_start = time_offset_ns_;
+    double view_end   = time_offset_ns_ + time_per_div_ns_ * HDIVS;
+    dig_snap_ = session_->digital_buffer().edges_in_range(view_start, view_end);
     int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
     for (int ch = 0; ch < n_dig; ++ch)
         if (session_->digital_info(ch).enabled)
@@ -422,11 +433,33 @@ void WaveformWidget::drawOverlay() {
         p.drawText(QRect(W-120, 4, 116, 14), Qt::AlignRight, "PAUSED  L=live");
     }
 
+    /* Draw rubber band selection box */
+    if (rubber_band_active_) {
+        int x1 = std::min(rubber_band_start_.x(), rubber_band_end_.x());
+        int y1 = std::min(rubber_band_start_.y(), rubber_band_end_.y());
+        int x2 = std::max(rubber_band_start_.x(), rubber_band_end_.x());
+        int y2 = std::max(rubber_band_start_.y(), rubber_band_end_.y());
+        p.setPen(QPen(QColor(100, 180, 255), 1, Qt::DashLine));
+        p.setBrush(QColor(100, 180, 255, 30));
+        p.drawRect(x1, y1, x2-x1, y2-y1);
+        /* Show time range of selection */
+        double t1 = pixelToTime(x1), t2 = pixelToTime(x2);
+        double dt = t2 - t1;
+        QString range_str;
+        if (dt >= 1e9)      range_str = QString::number(dt/1e9,'f',3) + " s";
+        else if (dt >= 1e6) range_str = QString::number(dt/1e6,'f',3) + " ms";
+        else if (dt >= 1e3) range_str = QString::number(dt/1e3,'f',3) + " us";
+        else                range_str = QString::number(dt,'f',1) + " ns";
+        p.setPen(QColor(100, 180, 255));
+        p.setFont(QFont("Monospace", 8));
+        p.drawText(QRect(x1, y1-16, x2-x1, 14), Qt::AlignCenter, range_str);
+    }
+
     // Help hint
     p.setPen(QColor(55, 55, 65));
     p.setFont(QFont("Sans", 7));
-    p.drawText(QRect(W-340, H-14, 336, 12), Qt::AlignRight,
-               "Click=cursor  Drag=move  RClick=delete  Del=clear all  L=follow");
+    p.drawText(QRect(W-420, H-14, 416, 12), Qt::AlignRight,
+               "Drag=zoom  Scroll=pan  RClick=menu  Mid=drag  Del=cursors  L=live");
 }
 
 // --- Cursor drawing ---------------------------------------------------------
@@ -717,6 +750,9 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
         follow_latest_ = false;
         dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_;
     }
+    if (e->button() == Qt::LeftButton && dragging_) {
+        dragging_ = false;
+    }
 }
 
 void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
@@ -732,52 +768,70 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
     }
     if (dragging_) {
         double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
-        time_offset_ns_ = std::max(0.0, drag_t0_ + (drag_start_.x()-e->pos().x())/ppns);
+        time_offset_ns_ = drag_t0_ + (drag_start_.x()-e->pos().x())/ppns;
+        clampTimeOffset();
         update();
     }
 }
 
-void WaveformWidget::mouseReleaseEvent(QMouseEvent*) {
+void WaveformWidget::mouseReleaseEvent(QMouseEvent* e) {
+    if (rubber_band_active_ && e->button() == Qt::LeftButton) {
+        rubber_band_active_ = false;
+        int x1 = std::min(rubber_band_start_.x(), rubber_band_end_.x());
+        int x2 = std::max(rubber_band_start_.x(), rubber_band_end_.x());
+        /* Only zoom if box is at least 10px wide */
+        if (x2 - x1 > 10) {
+            double t1 = pixelToTime(x1);
+            double t2 = pixelToTime(x2);
+            double range = t2 - t1;
+            time_per_div_ns_ = std::max(range / HDIVS, 100.0);
+            time_offset_ns_  = t1;
+            follow_latest_   = false;
+            clampTimeOffset();
+            /* Sync T/div dropdown via signal */
+            emit timeDivChanged(time_per_div_ns_);
+        }
+        update();
+        return;
+    }
     dragging_ = false; drag_cursor_ = -1;
 }
 
 void WaveformWidget::wheelEvent(QWheelEvent* e) {
-    /* Fixed preset time/div steps -- each scroll step moves one preset */
-    static const double PRESETS[] = {
-        100,          /* 100 ns  */
-        500,          /* 500 ns  */
-        1000,         /* 1 us    */
-        5000,         /* 5 us    */
-        10000,        /* 10 us   */
-        50000,        /* 50 us   */
-        100000,       /* 100 us  */
-        500000,       /* 500 us  */
-        1000000,      /* 1 ms    */
-        5000000,      /* 5 ms    */
-        10000000,     /* 10 ms   */
-        50000000,     /* 50 ms   */
-        100000000,    /* 100 ms  */
-        500000000,    /* 500 ms  */
-        1000000000,   /* 1 s     */
-        5000000000,   /* 5 s     */
-        10000000000,  /* 10 s    */
-        50000000000,  /* 50 s    */
-    };
-    static const int N = sizeof(PRESETS)/sizeof(PRESETS[0]);
-
-    /* Find current preset index */
-    int idx = 8; /* default 1 ms */
-    for (int i = 0; i < N-1; i++) {
-        if (time_per_div_ns_ <= PRESETS[i] * 1.01) { idx = i; break; }
-    }
-
-    if (e->angleDelta().y() > 0) idx = std::max(0, idx - 1);
-    else                          idx = std::min(N-1, idx + 1);
-
-    double tc = pixelToTime(e->position().x());
-    time_per_div_ns_ = PRESETS[idx];
-    time_offset_ns_  = std::max(0.0, tc - e->position().x()/width()*time_per_div_ns_*HDIVS);
+    /* Scroll pans left/right only -- it must never change T/div (zoom).
+     * Panning is clamped to the captured data's [t0,t1] range so the
+     * signal can't be scrolled out of view entirely. */
+    follow_latest_ = false;
+    double step = time_per_div_ns_ * 2.0;
+    double dir  = (e->angleDelta().y() > 0) ? -1.0 : 1.0;
+    time_offset_ns_ += dir * step;
+    clampTimeOffset();
     update();
+}
+
+void WaveformWidget::setTimePerDiv(double ns) {
+    time_per_div_ns_ = ns;
+    /* Picking a wider T/div while paused (not follow_latest_) leaves
+     * time_offset_ns_ wherever it was; if the new, wider span now runs past
+     * the actual captured data, only the fraction of the screen the data
+     * still covers shows the waveform and the rest sits empty. Re-clamp so
+     * the view always sits over real data. */
+    clampTimeOffset();
+    update();
+}
+
+void WaveformWidget::clampTimeOffset() {
+    double lo = 0.0, hi = 0.0;
+    if (session_) {
+        auto [t0, t1] = session_->digital_buffer().time_range_ns();
+        if (t1 > t0) { lo = t0; hi = t1; }
+    }
+    double view_span = time_per_div_ns_ * HDIVS;
+    /* Left edge: never scroll before the data start.
+     * Right edge: never scroll past the point where the data's end
+     * would leave the visible window entirely. */
+    double max_offset = std::max(lo, hi - view_span);
+    time_offset_ns_ = std::clamp(time_offset_ns_, lo, max_offset);
 }
 
 void WaveformWidget::keyPressEvent(QKeyEvent* e) {
@@ -812,8 +866,8 @@ void WaveformWidget::zoomFit() {
     update();
 }
 
-void WaveformWidget::panLeft()  { time_offset_ns_ = std::max(0.0, time_offset_ns_-time_per_div_ns_*2); update(); }
-void WaveformWidget::panRight() { time_offset_ns_ += time_per_div_ns_ * 2; update(); }
+void WaveformWidget::panLeft()  { time_offset_ns_ -= time_per_div_ns_*2; clampTimeOffset(); update(); }
+void WaveformWidget::panRight() { time_offset_ns_ += time_per_div_ns_*2; clampTimeOffset(); update(); }
 
 // Stubs  --  not used in digital-only mode
 void WaveformWidget::setVoltPerDiv(std::size_t, float)  {}

@@ -84,7 +84,7 @@ public:
     // ── Rolling mode ──────────────────────────────────────────────────────────
     void setFollowLatest(bool f)   { follow_latest_ = f; update(); }
     bool followLatest()    const   { return follow_latest_; }
-    void setTimePerDiv(double ns)  { time_per_div_ns_ = ns; update(); }
+    void setTimePerDiv(double ns);
     void resetCaptureTime()        { capture_start_ms_ = QDateTime::currentMSecsSinceEpoch(); time_offset_ns_ = 0; follow_latest_ = true; }
     void setChannelVisible(int ch, bool v) { if(ch>=0&&ch<8){ch_visible_[ch]=v; update();} }
     bool channelVisible(int ch)    const   { return (ch>=0&&ch<8) ? ch_visible_[ch] : false; }
@@ -93,6 +93,7 @@ public:
 
 signals:
     void cursorsChanged();
+    void timeDivChanged(double ns);
 
 protected:
     void initializeGL()                  override;
@@ -124,6 +125,7 @@ private:
     float  timeToPixel(double t_ns)     const;
     float  voltToPixel(float v, int ch) const;
     float  pixelToVolt(float y, int ch) const;
+    void   clampTimeOffset();
 
     void   updateCursorVoltages(WaveformCursor& c);
 
@@ -159,6 +161,10 @@ private:
 
     bool follow_latest_ = true;
     bool ch_visible_[8]  = {true,true,true,true,true,true,true,true};
+    /* Rectangle zoom */
+    bool   rubber_band_active_ = false;
+    QPoint rubber_band_start_;
+    QPoint rubber_band_end_;
     qint64 capture_start_ms_ = 0;
     const escope::CaptureSession* session_ = nullptr;
 };

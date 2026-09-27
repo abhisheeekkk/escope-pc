@@ -213,18 +213,31 @@ void MainWindow::setupToolBar() {
     auto* tdiv_combo = new QComboBox(tb);
     tdiv_combo->setStyleSheet("color:#eee; background:#333; min-width:80px;");
     const QStringList tdiv_labels = {
-        "100 ns","500 ns","1 us","5 us","10 us","50 us",
+        "10 ns","50 ns","100 ns","500 ns","1 us","5 us","10 us","50 us",
         "100 us","500 us","1 ms","5 ms","10 ms","50 ms",
         "100 ms","500 ms","1 s","5 s","10 s","50 s"
     };
     const QList<double> tdiv_values = {
-        100,500,1e3,5e3,10e3,50e3,
+        10,50,100,500,1e3,5e3,10e3,50e3,
         100e3,500e3,1e6,5e6,10e6,50e6,
         100e6,500e6,1e9,5e9,10e9,50e9
     };
     for (const auto& s : tdiv_labels) tdiv_combo->addItem(s);
-    tdiv_combo->setCurrentIndex(8); /* 1 ms default */
+    tdiv_combo->setCurrentIndex(10); /* 1 ms default */
     tb->addWidget(tdiv_combo);
+    connect(waveform_widget_, &WaveformWidget::timeDivChanged,
+        this, [tdiv_combo, tdiv_values](double ns) {
+            /* Find closest preset and update dropdown without triggering setTimePerDiv */
+            int best = 0;
+            double best_d = 1e18;
+            for (int i = 0; i < tdiv_values.size(); i++) {
+                double d = std::abs(tdiv_values[i] - ns);
+                if (d < best_d) { best_d = d; best = i; }
+            }
+            QSignalBlocker blocker(tdiv_combo);
+            tdiv_combo->setCurrentIndex(best);
+        });
+
     connect(tdiv_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
         this, [this, tdiv_values](int idx) {
             if (waveform_widget_) waveform_widget_->setTimePerDiv(tdiv_values[idx]);
@@ -355,9 +368,15 @@ void MainWindow::onStartCapture() {
 void MainWindow::onStopCapture() {
     source_->stop();
     capturing_ = false;
+    /* Freeze the view -- stop scrolling, keep data visible, keep whatever
+     * T/div the user had selected (zoomFit() used to reset it to fit the
+     * whole capture, overriding the user's choice the moment they stopped). */
+    if (waveform_widget_) {
+        waveform_widget_->setFollowLatest(false);
+    }
     act_start_->setEnabled(true);
     act_stop_->setEnabled(false);
-    status_label_->setText("Stopped");
+    status_label_->setText("Stopped -- right-click to add cursors, scroll to zoom");
 }
 
 void MainWindow::onNewData() {}

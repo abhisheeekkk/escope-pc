@@ -9,10 +9,11 @@
 #include <algorithm>
 #include <iostream>
 
-static constexpr uint8_t  PKT_MAGIC    = 0xE5;
-static constexpr uint32_t HDR_SIZE     = 4;
-static constexpr uint32_t EDGE_SIZE    = 5;
-static constexpr uint32_t MAX_EDGES    = 50;
+static constexpr uint8_t  PKT_MAGIC     = 0xE7;
+static constexpr uint8_t  PKT_VERSION   = 1;
+static constexpr uint32_t HDR_SIZE      = 24;
+static constexpr uint32_t MAX_SAMPLES   = 1u << 20;
+static constexpr uint32_t NUM_CHANNELS  = 8;
 
 namespace escope {
 
@@ -95,10 +96,9 @@ void StmDataSource::stop()
 void StmDataSource::reader_loop(CaptureSession* session)
 {
     std::vector<uint8_t> buf;
-    buf.reserve(4096);
-    uint8_t  tmp[512];
-    uint32_t pkt_count  = 0;
-    uint8_t  expect_seq = 0;
+    buf.reserve(1 << 16);
+    uint8_t  tmp[65536];
+    uint32_t burst_count = 0;
 
     /* Record start time in ns for wall-clock alignment */
     auto t_start = std::chrono::steady_clock::now();
@@ -121,47 +121,140 @@ void StmDataSource::reader_loop(CaptureSession* session)
             if (it != buf.begin()) buf.erase(buf.begin(), it);
             if (buf.size() < HDR_SIZE) break;
 
-            uint8_t  seq   = buf[1];
-            uint32_t count = (uint32_t(buf[2]) << 8) | buf[3];
+            uint8_t  ver   = buf[1];
+            uint16_t flags = uint16_t(buf[2]) | (uint16_t(buf[3]) << 8);
+            uint32_t rate  = uint32_t(buf[4])  | (uint32_t(buf[5])  << 8)
+                           | (uint32_t(buf[6]) << 16) | (uint32_t(buf[7]) << 24);
+            uint32_t nsamp = uint32_t(buf[8])  | (uint32_t(buf[9])  << 8)
+                           | (uint32_t(buf[10]) << 16) | (uint32_t(buf[11]) << 24);
+            uint32_t trig  = uint32_t(buf[12]) | (uint32_t(buf[13]) << 8)
+                           | (uint32_t(buf[14]) << 16) | (uint32_t(buf[15]) << 24);
+            uint32_t seq   = uint32_t(buf[16]) | (uint32_t(buf[17]) << 8)
+                           | (uint32_t(buf[18]) << 16) | (uint32_t(buf[19]) << 24);
 
-            if (count > MAX_EDGES) { buf.erase(buf.begin()); continue; }
-
-            uint32_t pkt_len = HDR_SIZE + count * EDGE_SIZE;
-            if (buf.size() < pkt_len) break;
-
-            // Sequence gap check
-            if (pkt_count > 0 && seq != expect_seq)
-                std::cerr << "[StmDataSource] Gap: expected seq "
-                          << (int)expect_seq << " got " << (int)seq << "\n";
-            expect_seq = seq + 1;
-            pkt_count++;
-
-            // Decode edges
-            for (uint32_t i = 0; i < count; i++) {
-                const uint8_t* e = buf.data() + HDR_SIZE + i * EDGE_SIZE;
-                uint32_t ts_ns = (uint32_t(e[0]) << 24)
-                               | (uint32_t(e[1]) << 16)
-                               | (uint32_t(e[2]) <<  8)
-                               |  uint32_t(e[3]);
-                uint8_t ch    = e[4] & 0x7F;
-                bool    level = (e[4] >> 7) & 1;
-
-                if (ch < CaptureSession::MAX_DIGITAL_CH) {
-                    /* Use wall-clock time so edges align with scrolling view.
-                     * STM32 timestamp is relative to capture start (starts at 0).
-                     * Wall-clock elapsed gives absolute position on screen. */
-                    auto now = std::chrono::steady_clock::now();
-                    double wall_ns = std::chrono::duration<double,std::nano>(
-                        now - t_start).count();
-                    session->digital_buffer().push_edge(wall_ns, ch, level);
-                }
+            if (ver != PKT_VERSION || rate == 0 || nsamp == 0 || nsamp > MAX_SAMPLES) {
+                buf.erase(buf.begin());   // false magic, resync
+                continue;
             }
 
-            buf.erase(buf.begin(), buf.begin() + pkt_len);
+            uint32_t frame_len = HDR_SIZE + nsamp;
+            if (buf.size() < frame_len) break;   // wait for the rest of the burst
+
+            // Raw sample data can legitimately contain the magic byte
+            // (0xE7) anywhere -- with dense/high-frequency signals this
+            // happens often. A false magic hit reads whatever bytes follow
+            // it as a header; those 23 bytes are essentially random, but
+            // any nsamp <= MAX_SAMPLES still "looks" like a valid frame and
+            // gets accepted, committing the parser to wait for however many
+            // bytes that bogus nsamp demands. Real bursts stream back to
+            // back, so if a next frame is already buffered, its magic byte
+            // must sit exactly at this frame's end; if it doesn't, this was
+            // a false hit -- reject it and keep searching instead of
+            // silently stalling the whole pipeline waiting on garbage.
+            if (buf.size() > frame_len && buf[frame_len] != PKT_MAGIC) {
+                buf.erase(buf.begin());
+                continue;
+            }
+
+            burst_count++;
+            if (flags & 0x1)
+                std::cerr << "[StmDataSource] Burst seq=" << seq
+                           << " auto-triggered, no edge seen\n";
+
+            /* Use wall-clock time so bursts align with the scrolling view.
+             * Each sample within the burst is offset from that anchor by its
+             * index divided by the burst's own sample rate. */
+            auto    now      = std::chrono::steady_clock::now();
+            double  wall_ns  = std::chrono::duration<double, std::nano>(now - t_start).count();
+            double  ns_per_sample = 1e9 / double(rate);
+            double  burst_t0_ns   = wall_ns - double(nsamp) * ns_per_sample;
+
+            // Decode into a local batch and push it in one call -- taking the
+            // digital buffer's lock per individual transition (there can be
+            // tens of thousands per burst) serializes against every GUI
+            // repaint far more than necessary.
+            //
+            // A single burst can hold up to MAX_SAMPLES (1M) samples. This
+            // used to cap recorded transitions at a low 20,000, decimated
+            // evenly across the burst -- but that was only ever needed
+            // because the GUI's side panels were doing full-history copies
+            // every frame (now fixed: see ChannelPanel/MeasurementPanel and
+            // DigitalBuffer::last_edges()/time_range_ns()). At a real
+            // burst's actual size (e.g. ~230k samples for this firmware), a
+            // dense signal like a 10 MHz clock can have a transition on
+            // nearly every sample; decimating that down to 20,000 threw
+            // away over 90% of the edges of an otherwise-clean periodic
+            // signal, which doesn't just lose detail -- unevenly dropped
+            // edges of a periodic signal alias into a waveform that no
+            // longer looks like the real one. The cap here is now sized to
+            // comfortably hold every transition of a full-density burst up
+            // to MAX_SAMPLES, so real signals aren't distorted; it only
+            // kicks in as a backstop for a burst denser than that.
+            const uint32_t max_ch = std::min<uint32_t>(NUM_CHANNELS, CaptureSession::MAX_DIGITAL_CH);
+            const uint8_t  ch_mask = uint8_t((1u << max_ch) - 1);
+            static constexpr std::size_t MAX_EDGES_PER_BURST = MAX_SAMPLES;
+
+            const uint8_t* samples = buf.data() + HDR_SIZE;
+
+            std::size_t total_transitions = 0;
+            {
+                uint8_t p = samples[0];
+                for (uint32_t i = 1; i < nsamp; i++) {
+                    uint8_t d = (samples[i] ^ p) & ch_mask;
+                    if (d) { total_transitions++; p = samples[i]; }
+                }
+            }
+            std::size_t stride = (total_transitions > MAX_EDGES_PER_BURST)
+                ? (total_transitions + MAX_EDGES_PER_BURST - 1) / MAX_EDGES_PER_BURST
+                : 1;
+
+            std::vector<DigitalEdge> batch;
+            batch.reserve(std::min<std::size_t>(total_transitions * max_ch, nsamp * max_ch));
+
+            uint8_t     prev = samples[0];
+            std::size_t transition_idx = 0;
+            for (uint32_t ch = 0; ch < max_ch; ch++)
+                batch.push_back({burst_t0_ns, uint8_t(ch), bool((prev >> ch) & 1)});
+
+            for (uint32_t i = 1; i < nsamp; i++) {
+                uint8_t cur  = samples[i];
+                uint8_t diff = (cur ^ prev) & ch_mask;
+                if (diff) {
+                    if ((transition_idx++ % stride) == 0) {
+                        double ts_ns = burst_t0_ns + double(i) * ns_per_sample;
+                        for (uint32_t ch = 0; ch < max_ch; ch++) {
+                            if (diff >> ch & 1)
+                                batch.push_back({ts_ns, uint8_t(ch), bool((cur >> ch) & 1)});
+                        }
+                    }
+                    prev = cur;
+                }
+
+                if (i == trig && trigger_cb_ && !(flags & 0x1)) {
+                    TriggerEvent evt;
+                    evt.timestamp_ns = burst_t0_ns + double(trig) * ns_per_sample;
+                    evt.source       = TriggerSource::Digital0;
+                    evt.condition    = TriggerCondition::RisingEdge;
+                    trigger_cb_(evt);
+                }
+            }
+            session->digital_buffer().push_batch(batch.data(), batch.size());
+
+            buf.erase(buf.begin(), buf.begin() + frame_len);
+
+            /* Bursts at 48 MS/s turn into far more edges per second than the
+             * old sparse hardware edge-list ever did. Without eviction a
+             * long-running continuous capture accumulates edges forever,
+             * and every scan/redraw over that history keeps getting more
+             * expensive until the GUI stops responding. Keep a generous
+             * rolling window of retained history instead. */
+            static constexpr double RETENTION_NS = 30.0 * 1e9; // 30 s
+            session->digital_buffer().trim_before(wall_ns - RETENTION_NS);
+
             if (data_cb_) data_cb_();
         }
     }
-    std::cout << "[StmDataSource] Stopped. " << pkt_count << " packets.\n";
+    std::cout << "[StmDataSource] Stopped. " << burst_count << " bursts.\n";
 }
 
 } // namespace escope
