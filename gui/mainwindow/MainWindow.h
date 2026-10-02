@@ -21,6 +21,7 @@ class WaveformWidget;
 class TimelineWidget;
 class MeasurementPanel;
 class ChannelPanel;
+class ProtocolPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -51,9 +52,11 @@ private:
     TimelineWidget*    timeline_widget_  = nullptr;
     MeasurementPanel*  measure_panel_    = nullptr;
     ChannelPanel*      channel_panel_    = nullptr;
+    ProtocolPanel*     protocol_panel_   = nullptr;
 
     QDockWidget*       measure_dock_     = nullptr;
     QDockWidget*       channel_dock_     = nullptr;
+    QDockWidget*       protocol_dock_    = nullptr;
 
     QAction*           act_start_        = nullptr;
     QAction*           act_stop_         = nullptr;

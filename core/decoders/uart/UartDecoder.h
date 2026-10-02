@@ -19,6 +19,11 @@ public:
     std::vector<DecodedEvent> decode(const DigitalBuffer& buf,
                                      const std::vector<DecoderChannelMap>& channels) override;
 
+    /// Estimate the baud rate of @p channel from its recent edges: in UART
+    /// data the shortest gap between edges is one bit time. Returns 0 if
+    /// there is not enough activity. Snapped to a standard rate if within 4%.
+    static uint32_t detect_baud(const DigitalBuffer& buf, uint8_t channel);
+
 private:
     uint32_t baud_    = 115200;
     uint8_t  data_bits_ = 8;

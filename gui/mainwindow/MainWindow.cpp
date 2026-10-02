@@ -3,6 +3,7 @@
 #include "timeline/TimelineWidget.h"
 #include "panels/MeasurementPanel.h"
 #include "panels/ChannelPanel.h"
+#include "panels/ProtocolPanel.h"
 
 #include "session/CaptureSession.h"
 #include "session/SessionSerializer.h"
@@ -21,6 +22,7 @@
 #include <QStatusBar>
 #include <QDockWidget>
 #include <QAction>
+#include <QActionGroup>
 #include <QLabel>
 #include <QComboBox>
 #include <QPushButton>
@@ -183,6 +185,8 @@ void MainWindow::setupMenuBar() {
             "<b>Controls:</b><br>"
             "Click = place cursor | Drag cursor = move | RClick cursor = delete<br>"
             "Del = clear all cursors | L = resume rolling<br>"
+            "[ / ] = jump to previous / next edge | Home / End = start / end of capture<br>"
+            "Drag a rectangle = zoom to that area<br>"
             "Scroll = zoom time | Drag (right-click+drag) = pan<br>"
             "F = fit view | +/- = zoom in/out | arrow keys = pan");
     });
@@ -334,6 +338,38 @@ void MainWindow::setupToolBar() {
         ch_menu->exec(ch_btn->mapToGlobal(QPoint(0, ch_btn->height())));
     });
 
+    /* ---- Protocol decoder selector (dock stays hidden until one is chosen) ---- */
+    tb->addSeparator();
+    auto* proto_btn = new QPushButton("Protocol", tb);
+    proto_btn->setStyleSheet("color:#eee; background:#333; padding:2px 6px;");
+    tb->addWidget(proto_btn);
+
+    auto* proto_menu  = new QMenu(proto_btn);
+    proto_menu->setStyleSheet("color:#eee; background:#222;");
+    auto* proto_group = new QActionGroup(proto_menu);
+    auto* proto_off   = proto_menu->addAction("Off");
+    auto* proto_uart  = proto_menu->addAction("UART");
+    for (auto* a : {proto_off, proto_uart}) {
+        a->setCheckable(true);
+        proto_group->addAction(a);
+    }
+    proto_off->setChecked(true);
+    auto selectProtocol = [this, proto_btn](const QString& name) {
+        protocol_panel_->setProtocol(name);
+        protocol_dock_->setVisible(!name.isEmpty());
+        proto_btn->setText(name.isEmpty() ? "Protocol" : "Protocol: " + name);
+    };
+    connect(proto_off,  &QAction::triggered, this, [selectProtocol]{ selectProtocol({}); });
+    connect(proto_uart, &QAction::triggered, this, [selectProtocol]{ selectProtocol("UART"); });
+    // Closing the dock with its X turns the decoder off.
+    connect(protocol_dock_, &QDockWidget::visibilityChanged, this,
+        [this, proto_off, selectProtocol](bool visible) {
+            if (!visible && protocol_panel_->active()) { proto_off->setChecked(true); selectProtocol({}); }
+        });
+    connect(proto_btn, &QPushButton::clicked, proto_btn, [proto_menu, proto_btn]() {
+        proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
+    });
+
     // STM32 hardware toggle
     tb->addSeparator();
     auto* act_hw = tb->addAction("Connect eScope");
@@ -390,6 +426,13 @@ void MainWindow::setupDockWidgets() {
     channel_dock_->setWidget(channel_panel_);
     channel_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::LeftDockWidgetArea, channel_dock_);
+
+    protocol_panel_ = new ProtocolPanel(this);
+    protocol_dock_  = new QDockWidget("Protocol", this);
+    protocol_dock_->setWidget(protocol_panel_);
+    protocol_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::RightDockWidgetArea, protocol_dock_);
+    protocol_dock_->hide();   // shown only once a protocol is picked in the toolbar
 }
 
 void MainWindow::setupStatusBar() {
@@ -444,6 +487,7 @@ void MainWindow::onStopCapture() {
      * whole capture, overriding the user's choice the moment they stopped). */
     if (waveform_widget_) {
         waveform_widget_->setFollowLatest(false);
+        waveform_widget_->snapToSignal();   // don't leave the view parked on an idle gap
     }
     act_start_->setEnabled(true);
     act_stop_->setEnabled(false);
@@ -470,6 +514,12 @@ void MainWindow::onUpdateDisplay() {
     if (display_frame_ % 5 == 0) {
         measure_panel_->updateFrom(*session_);
         channel_panel_->updateFrom(*session_);
+    }
+    // Protocol decode is heavier: ~2 Hz
+    if (display_frame_ % 15 == 0) {
+        const double t0 = waveform_widget_->timeOffset();
+        protocol_panel_->updateFrom(*session_, t0,
+            t0 + waveform_widget_->timePerDiv() * WaveformWidget::HDIVS);
     }
 }
 

@@ -123,3 +123,17 @@ TEST(UartDecoder, DecoderRegistered) {
     }
     EXPECT_TRUE(found) << "UART decoder should be in registry";
 }
+
+TEST(UartDecoder, DetectsBaudRate) {
+    for (uint32_t baud : {9600u, 115200u, 921600u}) {
+        DigitalBuffer buf(8);
+        double t = 1000.0;
+        for (int i = 0; i < 10; ++i) {
+            push_uart_byte(buf, 0, t, baud, 'U');
+            t += 20.0 * 1e9 / baud;
+        }
+        EXPECT_EQ(UartDecoder::detect_baud(buf, 0), baud);
+    }
+    DigitalBuffer empty(8);
+    EXPECT_EQ(UartDecoder::detect_baud(empty, 0), 0u);
+}

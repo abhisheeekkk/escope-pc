@@ -85,6 +85,10 @@ public:
     int  measTarget() const { return meas_target_; }
 
     // ── Rolling mode ──────────────────────────────────────────────────────────
+    /// If no visible channel has an edge on screen, jump to the newest one.
+    bool snapToSignal();
+    /// Centre the view on the next/previous edge of a visible channel.
+    void jumpToEdge(bool forward);
     void setFollowLatest(bool f)   { follow_latest_ = f; update(); }
     bool followLatest()    const   { return follow_latest_; }
     void setTimePerDiv(double ns);

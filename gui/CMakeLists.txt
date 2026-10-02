@@ -12,6 +12,8 @@ qt_add_executable(embeddedscope
     panels/MeasurementPanel.h
     panels/ChannelPanel.cpp
     panels/ChannelPanel.h
+    panels/ProtocolPanel.cpp
+    panels/ProtocolPanel.h
 )
 
 target_link_libraries(embeddedscope

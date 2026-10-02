@@ -1,6 +1,7 @@
 #include "decoders/uart/UartDecoder.h"
 #include "decoders/base/DecoderRegistry.h"
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <iomanip>
 #include <cctype>
@@ -17,6 +18,41 @@ void UartDecoder::configure(const std::vector<std::pair<std::string,std::string>
         else if (k == "stop2")  two_stop_ = (v == "1" || v == "true");
         else if (k == "invert") invert_   = (v == "1" || v == "true");
     }
+}
+
+uint32_t UartDecoder::detect_baud(const DigitalBuffer& buf, uint8_t channel) {
+    const auto edges = buf.last_edges(channel, 2000);
+    if (edges.size() < 8) return 0;
+
+    std::vector<double> gaps;
+    gaps.reserve(edges.size());
+    for (std::size_t i = 1; i < edges.size(); ++i) {
+        const double g = edges[i].timestamp_ns - edges[i - 1].timestamp_ns;
+        if (g > 0) gaps.push_back(g);
+    }
+    std::sort(gaps.begin(), gaps.end());
+
+    // Smallest gap value that at least 3 gaps agree on (within 10%), so a
+    // single glitch pulse can't be mistaken for the bit time.
+    double bit_ns = 0;
+    for (std::size_t i = 0; i + 2 < gaps.size(); ++i) {
+        if (gaps[i + 2] <= gaps[i] * 1.10) {
+            std::size_t j = i;
+            double sum = 0;
+            while (j < gaps.size() && gaps[j] <= gaps[i] * 1.10) sum += gaps[j++];
+            bit_ns = sum / static_cast<double>(j - i);
+            break;
+        }
+    }
+    if (bit_ns <= 0) return 0;
+
+    const double raw = 1e9 / bit_ns;
+    static const uint32_t standard[] = {1200, 2400, 4800, 9600, 14400, 19200, 28800,
+        38400, 57600, 76800, 115200, 230400, 460800, 921600, 1000000, 1500000,
+        2000000, 3000000};
+    for (uint32_t b : standard)
+        if (std::abs(raw - b) <= b * 0.04) return b;
+    return static_cast<uint32_t>(raw + 0.5);
 }
 
 std::vector<DecodedEvent> UartDecoder::decode(const DigitalBuffer& buf,

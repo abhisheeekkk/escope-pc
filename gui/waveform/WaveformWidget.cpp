@@ -213,7 +213,22 @@ void WaveformWidget::paintGL() {
          * anchoring to the data's own latest timestamp means the view is
          * always fully populated up to whatever has actually arrived. */
         auto [t0, t1] = session_->digital_buffer().time_range_ns();
-        time_offset_ns_ = std::max(0.0, t1 - time_per_div_ns_ * HDIVS);
+        const double span = time_per_div_ns_ * HDIVS;
+        double anchor = t1;
+        /* Sparse/bursty signals (e.g. UART with idle gaps) can leave the
+         * newest window with no edges on the channels being shown, which
+         * draws as a blank flat line. t1 is the newest edge on ANY channel
+         * (other channels may toggle continuously), so check only the
+         * visible ones and, if they've all been idle for longer than the
+         * window, anchor to their latest edge instead. */
+        double last_vis = -1;
+        for (uint8_t c = 0; c < 8; ++c) {
+            if (!ch_visible_[c]) continue;
+            auto e = session_->digital_buffer().last_edges(c, 1);
+            if (!e.empty()) last_vis = std::max(last_vis, e.back().timestamp_ns);
+        }
+        if (last_vis > 0 && last_vis < t1 - span) anchor = last_vis + span * 0.1;
+        time_offset_ns_ = std::max(0.0, anchor - span);
     }
 
     drawGrid();
@@ -661,6 +676,8 @@ bool WaveformWidget::autoScaleTimeDiv() {
     // edges -- same approach ChannelPanel/MeasurementPanel use for their
     // frequency readouts, so this agrees with what's shown there.
     auto edges = session_->digital_buffer().last_edges(ch, 50);
+    if (edges.size() < 2) return false;
+
     std::vector<double> periods;
     double prev_rise = -1;
     for (const auto& e : edges) {
@@ -669,18 +686,44 @@ bool WaveformWidget::autoScaleTimeDiv() {
             prev_rise = e.timestamp_ns;
         }
     }
-    if (periods.size() < 2) return false;
-    std::sort(periods.begin(), periods.end());
-    double period_ns = periods[periods.size() / 2];
-    if (!(period_ns > 0.0)) return false;
 
-    // Fit a handful of cycles across the full screen width so the
-    // waveform's shape is actually legible, rather than either a single
-    // edge (zoomed in too far) or a solid-looking blur (zoomed out too
-    // far).
-    constexpr double CYCLES_ACROSS_SCREEN = 3.0;
-    double ns = std::max(1.0, period_ns * CYCLES_ACROSS_SCREEN / HDIVS);
-    setTimePerDiv(ns);
+    // Spacing between consecutive edges of any polarity. For serial data
+    // (UART etc.) the shortest of these is one bit time.
+    std::vector<double> gaps;
+    for (size_t i = 1; i < edges.size(); ++i) {
+        double g = edges[i].timestamp_ns - edges[i - 1].timestamp_ns;
+        if (g > 0.0) gaps.push_back(g);
+    }
+    if (gaps.empty()) return false;
+    std::sort(gaps.begin(), gaps.end());
+
+    // Periodic if rising-edge periods are tightly clustered; otherwise the
+    // signal is data-dependent (e.g. UART) and the median period is
+    // meaningless -- scale from the bit time instead.
+    bool periodic = false;
+    double period_ns = 0.0;
+    if (periods.size() >= 2) {
+        std::sort(periods.begin(), periods.end());
+        period_ns = periods[periods.size() / 2];
+        periodic = period_ns > 0.0 &&
+                   periods.back() <= period_ns * 1.25 &&
+                   periods.front() >= period_ns * 0.8;
+    }
+
+    double ns;
+    if (periodic) {
+        // Fit a handful of cycles across the full screen width so the
+        // waveform's shape is legible.
+        constexpr double CYCLES_ACROSS_SCREEN = 3.0;
+        ns = period_ns * CYCLES_ACROSS_SCREEN / HDIVS;
+    } else {
+        // 10th-percentile gap rejects stray glitches; show several
+        // 10-bit UART frames across the screen.
+        constexpr double BITS_ACROSS_SCREEN = 100.0;
+        double bit_ns = gaps[gaps.size() / 10];
+        ns = bit_ns * BITS_ACROSS_SCREEN / HDIVS;
+    }
+    setTimePerDiv(std::max(1.0, ns));
     return true;
 }
 
@@ -779,6 +822,9 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
         }
         // Clicking empty area no longer drops a cursor -- use the "Add
         // Cursor" toolbar button instead (addCursorAtCenter()).
+        // Dragging from empty space draws a zoom rectangle (applied on release).
+        rubber_band_active_ = true;
+        rubber_band_start_ = rubber_band_end_ = e->pos();
         return;
     }
 
@@ -810,6 +856,11 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
 #endif
         update(); return;
     }
+    if (rubber_band_active_) {
+        rubber_band_end_ = e->pos();
+        update();
+        return;
+    }
     if (dragging_) {
         double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
         time_offset_ns_ = drag_t0_ + (drag_start_.x()-e->pos().x())/ppns;
@@ -828,7 +879,7 @@ void WaveformWidget::mouseReleaseEvent(QMouseEvent* e) {
             double t1 = pixelToTime(x1);
             double t2 = pixelToTime(x2);
             double range = t2 - t1;
-            time_per_div_ns_ = std::max(range / HDIVS, 100.0);
+            time_per_div_ns_ = std::max(range / HDIVS, 10.0);
             time_offset_ns_  = t1;
             follow_latest_   = false;
             clampTimeOffset();
@@ -843,12 +894,67 @@ void WaveformWidget::mouseReleaseEvent(QMouseEvent* e) {
 
 void WaveformWidget::wheelEvent(QWheelEvent* e) {
     /* Scroll pans left/right only -- it must never change T/div (zoom).
-     * Panning is clamped to the captured data's [t0,t1] range so the
-     * signal can't be scrolled out of view entirely. */
+     * The step is proportional to the actual scroll amount (a touchpad sends
+     * many tiny deltas; a wheel notch is 120 units = one division), and
+     * horizontal scrolling is honoured too. Scrolling up/left moves earlier. */
     follow_latest_ = false;
-    double step = time_per_div_ns_ * 2.0;
-    double dir  = (e->angleDelta().y() > 0) ? -1.0 : 1.0;
-    time_offset_ns_ += dir * step;
+    const QPoint pd = e->pixelDelta();
+    const QPoint ad = e->angleDelta();
+    double dt;
+    if (!pd.isNull()) {
+        const double px   = pd.x() != 0 ? pd.x() : pd.y();
+        const double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
+        dt = -px / ppns;
+    } else {
+        const double units = ad.x() != 0 ? ad.x() : ad.y();
+        dt = -units / 120.0 * time_per_div_ns_;
+    }
+    time_offset_ns_ += dt;
+    clampTimeOffset();
+    update();
+    e->accept();
+}
+
+bool WaveformWidget::snapToSignal() {
+    if (!session_) return false;
+    const auto& buf = session_->digital_buffer();
+    const double span = time_per_div_ns_ * HDIVS;
+    double newest = -1;
+    for (uint8_t c = 0; c < 8; ++c) {
+        if (!ch_visible_[c]) continue;
+        auto last = buf.last_edges(c, 1);
+        if (last.empty()) continue;
+        newest = std::max(newest, last.back().timestamp_ns);
+        for (const auto& ed : buf.edges_in_range(time_offset_ns_, time_offset_ns_ + span))
+            if (ed.channel == c) return false;       // signal already on screen
+    }
+    if (newest < 0) return false;
+    time_offset_ns_ = newest - span * 0.75;
+    clampTimeOffset();
+    update();
+    return true;
+}
+
+void WaveformWidget::jumpToEdge(bool forward) {
+    if (!session_) return;
+    follow_latest_ = false;
+    const auto& buf = session_->digital_buffer();
+    const double span   = time_per_div_ns_ * HDIVS;
+    const double center = time_offset_ns_ + span / 2.0;
+    const double eps    = std::max(1.0, time_per_div_ns_ * 0.01);
+    const auto [t0, t1] = buf.time_range_ns();
+    const auto edges = forward ? buf.edges_in_range(center + eps, t1)
+                               : buf.edges_in_range(t0, center - eps);
+    double target = -1;
+    if (forward) {
+        for (const auto& ed : edges)
+            if (ch_visible_[ed.channel]) { target = ed.timestamp_ns; break; }
+    } else {
+        for (auto it = edges.rbegin(); it != edges.rend(); ++it)
+            if (ch_visible_[it->channel]) { target = it->timestamp_ns; break; }
+    }
+    if (target < 0) return;
+    time_offset_ns_ = target - span / 2.0;
     clampTimeOffset();
     update();
 }
@@ -887,6 +993,10 @@ void WaveformWidget::keyPressEvent(QKeyEvent* e) {
     case Qt::Key_Minus:             zoomOutTime(); break;
     case Qt::Key_Left:              panLeft();     break;
     case Qt::Key_Right:             panRight();    break;
+    case Qt::Key_BracketRight:      jumpToEdge(true);  break;
+    case Qt::Key_BracketLeft:       jumpToEdge(false); break;
+    case Qt::Key_Home:              follow_latest_ = false; time_offset_ns_ = 0; clampTimeOffset(); update(); break;
+    case Qt::Key_End:               follow_latest_ = false; time_offset_ns_ = 1e30; clampTimeOffset(); update(); break;
     case Qt::Key_L:                 follow_latest_ = true; update(); break;
     case Qt::Key_Delete:
     case Qt::Key_Backspace:         clearCursors(); break;
