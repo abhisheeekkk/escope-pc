@@ -23,14 +23,20 @@ public:
     void updateFrom(const escope::CaptureSession& session,
                     double view_t0_ns, double view_t1_ns);
 
+    /// Hide everything decoded so far (new frames still appear).
+    void clearDecoded();
+
 private:
     void fillChannelCombo(QComboBox* c, int select);
 
+    const escope::CaptureSession* session_ = nullptr;  ///< last session seen by updateFrom
+    double          clear_before_ns_ = -1.0;           ///< frames starting before this are hidden
     QString         protocol_;
     QLabel*         title_   = nullptr;
     QComboBox*      tx_      = nullptr;
     QComboBox*      rx_      = nullptr;
     QLabel*         baud_    = nullptr;
     QLabel*         summary_ = nullptr;
+    QPlainTextEdit* text_    = nullptr;   ///< full decoded byte stream as text
     QPlainTextEdit* output_  = nullptr;
 };

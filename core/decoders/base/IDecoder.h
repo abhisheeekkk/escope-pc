@@ -25,6 +25,7 @@ struct DecodedEvent {
     } type = Type::Data;
 
     bool is_error = false;
+    int  value    = -1;       ///< Decoded byte value for data frames, -1 if n/a
 };
 
 /// Channel assignment for a decoder.

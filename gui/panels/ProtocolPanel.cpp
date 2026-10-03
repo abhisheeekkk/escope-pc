@@ -5,10 +5,12 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QStandardItemModel>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <algorithm>
 
 namespace {
@@ -26,9 +28,14 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(4, 4, 4, 4);
 
+    auto* head = new QHBoxLayout;
     title_ = new QLabel(this);
     title_->setStyleSheet("color:#00E666; font-weight:bold;");
-    root->addWidget(title_);
+    head->addWidget(title_, 1);
+    auto* clear_btn = new QPushButton("Clear", this);
+    connect(clear_btn, &QPushButton::clicked, this, &ProtocolPanel::clearDecoded);
+    head->addWidget(clear_btn);
+    root->addLayout(head);
 
     auto* form = new QFormLayout;
     form->setContentsMargins(0, 0, 0, 0);
@@ -62,6 +69,12 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     summary_->setStyleSheet("color:#888; font-size:10px;");
     root->addWidget(summary_);
 
+    text_ = new QPlainTextEdit(this);
+    text_->setReadOnly(true);
+    text_->setPlaceholderText("Decoded text (whole capture)");
+    text_->setStyleSheet("background:#111; color:#00E666; font-family:monospace; font-size:11px;");
+    root->addWidget(text_, 1);
+
     output_ = new QPlainTextEdit(this);
     output_->setReadOnly(true);
     output_->setLineWrapMode(QPlainTextEdit::NoWrap);
@@ -81,11 +94,22 @@ void ProtocolPanel::setProtocol(const QString& name) {
     protocol_ = name;
     title_->setText(name.isEmpty() ? QString() : name + " decoder");
     output_->clear();
+    text_->clear();
+    summary_->clear();
+}
+
+void ProtocolPanel::clearDecoded() {
+    // The decoder re-decodes the whole history each refresh (to stay locked to
+    // real start bits), so "clear" = ignore frames up to the newest edge now.
+    if (session_) clear_before_ns_ = session_->digital_buffer().time_range_ns().second;
+    text_->clear();
+    output_->clear();
     summary_->clear();
 }
 
 void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
                                double view_t0_ns, double view_t1_ns) {
+    session_ = &session;
     if (protocol_.isEmpty()) return;
 
     struct Line { int ch; const char* role; };
@@ -96,6 +120,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         summary_->setText("Select a TX or RX pin");
         baud_->setText("Baud: auto");
         output_->clear();
+        text_->clear();
         return;
     }
 
@@ -117,6 +142,33 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         events.insert(events.end(), ev.begin(), ev.end());
     }
     baud_->setText("Baud (auto): " + baud_text.join("   "));
+
+    events.erase(std::remove_if(events.begin(), events.end(),
+        [&](const escope::DecodedEvent& e) { return e.start_ns <= clear_before_ns_; }),
+        events.end());
+
+    // Rebuild the whole decoded stream as text, independent of the visible
+    // window, so a long string isn't cut off by zoom/scroll. Per line (TX/RX).
+    {
+        std::sort(events.begin(), events.end(),
+            [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
+        QString tx_text, rx_text;
+        for (const auto& e : events) {
+            if (e.is_error || e.value < 0) continue;
+            QString& dst = (e.label.compare(0, 2, "TX") == 0) ? tx_text : rx_text;
+            const char c = static_cast<char>(e.value);
+            if (c == '\n') dst += '\n';
+            else if (c == '\r') continue;
+            else dst += (c >= 32 && c < 127) ? QChar(c) : QChar('.');
+        }
+        constexpr int MAX_CHARS = 20000;
+        auto tail = [](QString s) { return s.size() > MAX_CHARS ? s.right(MAX_CHARS) : s; };
+        QString out;
+        if (!tx_text.isEmpty()) out += "TX: " + tail(tx_text);
+        if (!rx_text.isEmpty()) out += (out.isEmpty() ? "" : "\n") + QString("RX: ") + tail(rx_text);
+        text_->setPlainText(out);
+        text_->verticalScrollBar()->setValue(text_->verticalScrollBar()->maximum());
+    }
 
     events.erase(std::remove_if(events.begin(), events.end(),
         [&](const escope::DecodedEvent& e) {

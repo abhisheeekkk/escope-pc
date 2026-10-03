@@ -125,6 +125,7 @@ std::vector<DecodedEvent> UartDecoder::decode_channel(const DigitalBuffer& buf,
             evt.end_ns   = t + bit_ns * (two_stop_ ? 2.0 : 1.0);
             evt.channel  = ch_idx;
             evt.type     = DecodedEvent::Type::Data;
+            evt.value    = byte_val;
 
             // Label: hex + ASCII if printable
             std::ostringstream oss;
