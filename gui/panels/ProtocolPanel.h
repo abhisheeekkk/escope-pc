@@ -6,6 +6,7 @@ namespace escope { class CaptureSession; }
 class QComboBox;
 class QPlainTextEdit;
 class QLabel;
+class QFormLayout;
 
 /// Protocol decoder panel. Hidden until a protocol is chosen from the
 /// toolbar's "Protocol" button; then shows the TX/RX pin pickers and the
@@ -15,7 +16,7 @@ class ProtocolPanel : public QWidget {
 public:
     explicit ProtocolPanel(QWidget* parent = nullptr);
 
-    /// Select the active protocol ("UART"), or an empty string for off.
+    /// Select the active protocol ("UART" or "I2C"), or an empty string for off.
     void setProtocol(const QString& name);
     bool active() const { return !protocol_.isEmpty(); }
 
@@ -31,6 +32,7 @@ private:
 
     const escope::CaptureSession* session_ = nullptr;  ///< last session seen by updateFrom
     double          clear_before_ns_ = -1.0;           ///< frames starting before this are hidden
+    QFormLayout*    form_    = nullptr;
     QString         protocol_;
     QLabel*         title_   = nullptr;
     QComboBox*      tx_      = nullptr;

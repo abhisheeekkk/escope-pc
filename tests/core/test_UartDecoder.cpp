@@ -125,7 +125,7 @@ TEST(UartDecoder, DecoderRegistered) {
 }
 
 TEST(UartDecoder, DetectsBaudRate) {
-    for (uint32_t baud : {9600u, 115200u, 921600u}) {
+    for (uint32_t baud : {9600u, 115200u, 500000u, 921600u}) {
         DigitalBuffer buf(8);
         double t = 1000.0;
         for (int i = 0; i < 10; ++i) {

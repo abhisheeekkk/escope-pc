@@ -349,7 +349,8 @@ void MainWindow::setupToolBar() {
     auto* proto_group = new QActionGroup(proto_menu);
     auto* proto_off   = proto_menu->addAction("Off");
     auto* proto_uart  = proto_menu->addAction("UART");
-    for (auto* a : {proto_off, proto_uart}) {
+    auto* proto_i2c   = proto_menu->addAction("I2C");
+    for (auto* a : {proto_off, proto_uart, proto_i2c}) {
         a->setCheckable(true);
         proto_group->addAction(a);
     }
@@ -361,6 +362,7 @@ void MainWindow::setupToolBar() {
     };
     connect(proto_off,  &QAction::triggered, this, [selectProtocol]{ selectProtocol({}); });
     connect(proto_uart, &QAction::triggered, this, [selectProtocol]{ selectProtocol("UART"); });
+    connect(proto_i2c,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("I2C"); });
     // Closing the dock with its X turns the decoder off.
     connect(protocol_dock_, &QDockWidget::visibilityChanged, this,
         [this, proto_off, selectProtocol](bool visible) {
@@ -369,6 +371,28 @@ void MainWindow::setupToolBar() {
     connect(proto_btn, &QPushButton::clicked, proto_btn, [proto_menu, proto_btn]() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });
+
+    /* ---- Trigger position: where the trigger sits in the capture window ---- */
+    tb->addSeparator();
+    auto* pos_label = new QLabel("  Trig pos:", tb);
+    pos_label->setStyleSheet("color:#aaa;");
+    tb->addWidget(pos_label);
+    auto* pos_combo = new QComboBox(tb);
+    pos_combo->setStyleSheet("color:#eee; background:#333; min-width:60px;");
+    pos_combo->setToolTip("Where the trigger sits in the capture window.\n"
+                          "Left = most of the window is after the trigger; right = more history before it.");
+    // The burst is 7 segments; the trigger falls in segment `pre`.
+    for (int pre = 0; pre <= 6; ++pre)
+        pos_combo->addItem(QString("%1%").arg(qRound((pre + 0.5) / 7.0 * 100.0)), pre);
+    pos_combo->setCurrentIndex(0);
+    tb->addWidget(pos_combo);
+    connect(pos_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this, pos_combo](int) {
+            escope::TriggerConfig cfg = session_->trigger().config();
+            cfg.pre_trigger_ns = pos_combo->currentData().toInt() * 682666.7;
+            session_->trigger().set_config(cfg);
+            source_->configure(*session_);
+        });
 
     // STM32 hardware toggle
     tb->addSeparator();
@@ -553,6 +577,7 @@ void MainWindow::onTriggerSingle() {
         escope::TriggerConfig cfg = session_->trigger().config();
         cfg.mode = escope::TriggerMode::Single;
         session_->trigger().set_config(cfg);
+        source_->configure(*session_);          // device: wait for a real trigger
         status_label_->setText("Single trigger armed -- waiting for one capture");
     });
 }
@@ -561,6 +586,7 @@ void MainWindow::onTriggerAuto() {
     escope::TriggerConfig cfg = session_->trigger().config();
     cfg.mode = escope::TriggerMode::Auto;
     session_->trigger().set_config(cfg);
+    source_->configure(*session_);
 
     // AUTO also autosets T/div from the signal itself, like a scope's
     // "Autoset" -- measure the visible channel's period from recent edges

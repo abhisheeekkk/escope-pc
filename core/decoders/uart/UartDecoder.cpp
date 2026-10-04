@@ -48,7 +48,7 @@ uint32_t UartDecoder::detect_baud(const DigitalBuffer& buf, uint8_t channel) {
 
     const double raw = 1e9 / bit_ns;
     static const uint32_t standard[] = {1200, 2400, 4800, 9600, 14400, 19200, 28800,
-        38400, 57600, 76800, 115200, 230400, 460800, 921600, 1000000, 1500000,
+        38400, 57600, 76800, 115200, 230400, 460800, 500000, 921600, 1000000, 1500000,
         2000000, 3000000};
     for (uint32_t b : standard)
         if (std::abs(raw - b) <= b * 0.04) return b;

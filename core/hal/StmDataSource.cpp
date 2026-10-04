@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cerrno>
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 
 static constexpr uint8_t  PKT_MAGIC     = 0xE7;
@@ -56,6 +57,55 @@ bool StmDataSource::open_port(const std::string& path)
     int flags = fcntl(fd_, F_GETFL, 0);
     fcntl(fd_, F_SETFL, flags & ~O_NONBLOCK);
     return true;
+}
+
+SourceStatus StmDataSource::configure(const CaptureSession& session)
+{
+    if (fd_ < 0) return SourceStatus::OK;     // not open yet; sent again on start
+
+    const TriggerConfig& tc = session.trigger().config();
+    uint8_t mode = 0, ch = 0;              // unless a digital edge trigger is set: D0 rising
+
+    // Trigger position: how many of the burst's 7 segments (32 KB at 48 MS/s =
+    // 682.67 us each) come before the trigger. 0 puts the trigger at the left
+    // edge of the capture, so almost the whole window is after it.
+    const uint8_t pre = uint8_t(std::clamp(std::lround(tc.pre_trigger_ns / 682666.7), 0L, 6L));
+
+    const int src = int(tc.source) - int(TriggerSource::Digital0);
+    if (src >= 0 && src < int(NUM_CHANNELS)) {
+        bool known = true;
+        switch (tc.condition) {
+        case TriggerCondition::RisingEdge:  mode = 0; break;
+        case TriggerCondition::FallingEdge: mode = 1; break;
+        case TriggerCondition::EitherEdge:  mode = 2; break;
+        default: known = false; break;
+        }
+        if (known) ch = uint8_t(src);
+    }
+
+    // Auto = capture anyway after 500 ms (units of 10 ms); Normal/Single = wait for a real trigger.
+    const uint8_t auto_10ms = (tc.mode == TriggerMode::Auto) ? 50 : 0;
+    uint8_t pkt[8] = {0xC7, 0x01, mode, ch, 0, pre, auto_10ms, 0};
+    for (int i = 0; i < 7; i++) pkt[7] ^= pkt[i];
+    send_command(pkt);
+
+    uint8_t pulls[8] = {0xC7, 0x02, nopull_mask_, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 7; i++) pulls[7] ^= pulls[i];
+    send_command(pulls);
+    return SourceStatus::OK;
+}
+
+void StmDataSource::send_command(const uint8_t (&pkt)[8])
+{
+    if (fd_ >= 0) { ssize_t n = ::write(fd_, pkt, sizeof(pkt)); (void)n; }
+}
+
+void StmDataSource::set_input_nopull(uint8_t mask)
+{
+    nopull_mask_ = mask;
+    uint8_t pulls[8] = {0xC7, 0x02, mask, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 7; i++) pulls[7] ^= pulls[i];
+    send_command(pulls);
 }
 
 SourceStatus StmDataSource::open(const std::string& id)
@@ -214,7 +264,7 @@ void StmDataSource::reader_loop(CaptureSession* session)
             uint8_t     prev = samples[0];
             std::size_t transition_idx = 0;
             for (uint32_t ch = 0; ch < max_ch; ch++)
-                batch.push_back({burst_t0_ns, uint8_t(ch), bool((prev >> ch) & 1)});
+                batch.push_back({burst_t0_ns, uint8_t(ch), bool((prev >> ch) & 1), true});
 
             for (uint32_t i = 1; i < nsamp; i++) {
                 uint8_t cur  = samples[i];

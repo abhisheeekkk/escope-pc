@@ -4,6 +4,7 @@ add_executable(escope_tests
     core/test_TriggerEngine.cpp
     core/test_Measurements.cpp
     core/test_UartDecoder.cpp
+    core/test_I2CDecoder.cpp
 )
 
 target_link_libraries(escope_tests

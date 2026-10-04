@@ -12,6 +12,10 @@ struct DigitalEdge {
     double   timestamp_ns;  ///< Nanoseconds from capture start
     uint8_t  channel;       ///< Channel index (0–15)
     bool     rising;        ///< true = rising edge, false = falling edge
+    /// True for the per-burst level snapshot a capture source pushes at the start
+    /// of each burst: it records the line level, it is NOT a real transition, and
+    /// the time since the previous burst was not observed.
+    bool     snapshot = false;
 };
 
 /// Edge-list storage for digital channels.

@@ -15,11 +15,16 @@ public:
     SourceStatus            open(const std::string& id = "") override;
     void                    close()                           override;
     bool                    is_open()    const override { return fd_ >= 0; }
-    SourceStatus            configure(const CaptureSession&)  override { return SourceStatus::OK; }
+    /// Sends the session's trigger setting to the device (works while running).
+    SourceStatus            configure(const CaptureSession&)  override;
     SourceStatus            start(CaptureSession& session)    override;
     void                    stop()                            override;
     bool                    is_running() const override { return running_; }
     std::string             name()       const override { return "STM32 EmbeddedScope"; }
+
+    /// Capture inputs (bit n = Dn) whose internal pull-down is released.
+    /// Sent to the device now, and again on every configure().
+    void set_input_nopull(uint8_t mask);
 
     void set_data_callback(DataCallback cb)       override { data_cb_    = std::move(cb); }
     void set_error_callback(ErrorCallback cb)     override { error_cb_   = std::move(cb); }
@@ -32,6 +37,8 @@ private:
     std::string       port_;
     int               fd_      = -1;
     std::atomic<bool> running_ {false};
+    uint8_t           nopull_mask_ = 0;
+    void              send_command(const uint8_t (&pkt)[8]);
     std::thread       worker_;
 
     DataCallback      data_cb_;
