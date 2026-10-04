@@ -67,8 +67,9 @@ SourceStatus StmDataSource::configure(const CaptureSession& session)
     uint8_t mode = 0, ch = 0;              // unless a digital edge trigger is set: D0 rising
 
     // Trigger position: how many of the burst's 7 segments (32 KB at 48 MS/s =
-    // 682.67 us each) come before the trigger. 0 puts the trigger at the left
-    // edge of the capture, so almost the whole window is after it.
+    // 682.67 us each) come before the trigger. The default config asks for 0, which
+    // puts the trigger near the left edge so almost the whole 4.78 ms window is
+    // after it and a whole event fits. Not exposed in the GUI on purpose.
     const uint8_t pre = uint8_t(std::clamp(std::lround(tc.pre_trigger_ns / 682666.7), 0L, 6L));
 
     const int src = int(tc.source) - int(TriggerSource::Digital0);

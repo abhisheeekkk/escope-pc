@@ -372,28 +372,6 @@ void MainWindow::setupToolBar() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });
 
-    /* ---- Trigger position: where the trigger sits in the capture window ---- */
-    tb->addSeparator();
-    auto* pos_label = new QLabel("  Trig pos:", tb);
-    pos_label->setStyleSheet("color:#aaa;");
-    tb->addWidget(pos_label);
-    auto* pos_combo = new QComboBox(tb);
-    pos_combo->setStyleSheet("color:#eee; background:#333; min-width:60px;");
-    pos_combo->setToolTip("Where the trigger sits in the capture window.\n"
-                          "Left = most of the window is after the trigger; right = more history before it.");
-    // The burst is 7 segments; the trigger falls in segment `pre`.
-    for (int pre = 0; pre <= 6; ++pre)
-        pos_combo->addItem(QString("%1%").arg(qRound((pre + 0.5) / 7.0 * 100.0)), pre);
-    pos_combo->setCurrentIndex(0);
-    tb->addWidget(pos_combo);
-    connect(pos_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-        [this, pos_combo](int) {
-            escope::TriggerConfig cfg = session_->trigger().config();
-            cfg.pre_trigger_ns = pos_combo->currentData().toInt() * 682666.7;
-            session_->trigger().set_config(cfg);
-            source_->configure(*session_);
-        });
-
     // STM32 hardware toggle
     tb->addSeparator();
     auto* act_hw = tb->addAction("Connect eScope");
