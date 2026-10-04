@@ -110,13 +110,9 @@ void ProtocolPanel::setProtocol(const QString& name) {
     const bool i2c = (name == "I2C");
     if (auto* l = qobject_cast<QLabel*>(form_->labelForField(tx_))) l->setText(i2c ? "SDA pin:" : "TX pin:");
     if (auto* l = qobject_cast<QLabel*>(form_->labelForField(rx_))) l->setText(i2c ? "SCL pin:" : "RX pin:");
-    if (!name.isEmpty()) {
-        // Defaults follow the board's labelling: UART0 on D0; I2C SDA=D6, SCL=D5.
-        const int a = i2c ? 6 : 0, b = i2c ? 5 : -1;
-        rx_->setCurrentIndex(0);                 // free both before assigning
-        tx_->setCurrentIndex(a + 1);
-        rx_->setCurrentIndex(b + 1);
-    }
+    // Pins are left for the user to choose; start from None on every protocol switch.
+    tx_->setCurrentIndex(0);
+    rx_->setCurrentIndex(0);
     text_->setPlaceholderText(i2c ? "Hex log (whole capture)" : "Decoded text (whole capture)");
     clear_before_ns_ = -1.0;
     output_->clear();

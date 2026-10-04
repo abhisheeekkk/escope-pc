@@ -12,7 +12,7 @@ EmbeddedScope is a PC application that combines:
 
 - **Analog oscilloscope** — 2 channels, GPU-accelerated waveform rendering
 - **Logic analyzer** — 8 digital channels, edge-list storage (efficient for long captures)
-- **Protocol decoder** — UART (working), SPI/I2C/CAN (Phase 3)
+- **Protocol decoder** — UART and I2C (working), SPI/CAN (Phase 3)
 - **Unified timeline** — all signals on one shared nanosecond time base
 - **Simulated source** — full GUI development without any hardware
 - **eScope hardware source** — 8ch @ 48 MS/s triggered captures over USB CDC-ACM (`/dev/ttyACM*`), STM32-based
@@ -122,7 +122,7 @@ cd build && ctest --output-on-failure
 
 ### Phase 3 — Protocol engine
 - [ ] SPI decoder
-- [ ] I2C decoder
+- [x] I2C decoder (START/STOP/repeated START, address + R/W, ACK/NACK, glitch filter)
 - [ ] CAN decoder
 - [ ] Unified protocol timeline rendering
 - [ ] Protocol search / filter
@@ -170,6 +170,26 @@ The GUI toggles between this and the simulated source from the toolbar's
   single-shot mode so the next trigger after that grabs one capture and
   stops; **Run** always resumes continuous capture regardless of a prior
   SINGLE press
+
+---
+
+## Protocol decoder panel
+
+- **Enable** — toolbar "Protocol" menu: UART, I2C or Off. The Protocol dock
+  appears/disappears with that menu; it has no float, close or minimize
+  buttons and sits in the right-hand column. Resize it by dragging its edge.
+- **Pins** — no pins are assigned by default. Pick them yourself: TX/RX for
+  UART, SDA/SCL for I2C (a pin can't be used for both roles).
+- **UART** — baud rate is auto-detected per line; decoded text shows the whole
+  capture.
+- **I2C** — shows the bus speed (median SCL period) and a hex log of every
+  transaction in the capture, one line per transaction:
+  `<time>  S [3C W] A 00 A 21 A P` (`A` = ACK, `N` = NACK, `Sr` = repeated
+  START, `~` = burst began mid-transfer, `!INCOMPLETE` / `!NO SYNC` = errors).
+  The log keeps the newest 5000 lines.
+- **Clear / Copy** — Clear hides everything decoded so far; Copy puts the whole
+  log on the clipboard. The log is never cleared by docking/layout changes,
+  only by switching protocol or pressing Clear.
 
 ---
 

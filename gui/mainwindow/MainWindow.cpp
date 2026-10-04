@@ -37,6 +37,7 @@
 #include <QDialogButtonBox>
 #include <thread>
 
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
@@ -363,11 +364,6 @@ void MainWindow::setupToolBar() {
     connect(proto_off,  &QAction::triggered, this, [selectProtocol]{ selectProtocol({}); });
     connect(proto_uart, &QAction::triggered, this, [selectProtocol]{ selectProtocol("UART"); });
     connect(proto_i2c,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("I2C"); });
-    // Closing the dock with its X turns the decoder off.
-    connect(protocol_dock_, &QDockWidget::visibilityChanged, this,
-        [this, proto_off, selectProtocol](bool visible) {
-            if (!visible && protocol_panel_->active()) { proto_off->setChecked(true); selectProtocol({}); }
-        });
     connect(proto_btn, &QPushButton::clicked, proto_btn, [proto_menu, proto_btn]() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });
@@ -432,7 +428,10 @@ void MainWindow::setupDockWidgets() {
     protocol_panel_ = new ProtocolPanel(this);
     protocol_dock_  = new QDockWidget("Protocol", this);
     protocol_dock_->setWidget(protocol_panel_);
-    protocol_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    protocol_dock_->setAllowedAreas(Qt::RightDockWidgetArea);
+    // Fixed in place: no float/close/move buttons. It appears and disappears
+    // via the toolbar's Protocol menu and is resized by dragging its edge.
+    protocol_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
     addDockWidget(Qt::RightDockWidgetArea, protocol_dock_);
     protocol_dock_->hide();   // shown only once a protocol is picked in the toolbar
 }
