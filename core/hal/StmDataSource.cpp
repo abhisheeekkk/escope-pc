@@ -1,4 +1,5 @@
 #include "hal/StmDataSource.h"
+#include "hal/BurstFrame.h"
 #include "session/CaptureSession.h"
 #include <fcntl.h>
 #include <termios.h>
@@ -10,10 +11,8 @@
 #include <cmath>
 #include <iostream>
 
-static constexpr uint8_t  PKT_MAGIC     = 0xE7;
-static constexpr uint8_t  PKT_VERSION   = 1;
-static constexpr uint32_t HDR_SIZE      = 24;
-static constexpr uint32_t MAX_SAMPLES   = 1u << 20;
+static constexpr uint8_t  PKT_MAGIC     = escope::BURST_MAGIC;
+static constexpr uint32_t MAX_SAMPLES   = escope::BURST_MAX_SAMPLES;
 static constexpr uint32_t NUM_CHANNELS  = 8;
 
 namespace escope {
@@ -150,6 +149,7 @@ void StmDataSource::reader_loop(CaptureSession* session)
     buf.reserve(1 << 16);
     uint8_t  tmp[65536];
     uint32_t burst_count = 0;
+    BurstClock burst_clock;
 
     /* Record start time in ns for wall-clock alignment */
     auto t_start = std::chrono::steady_clock::now();
@@ -165,28 +165,25 @@ void StmDataSource::reader_loop(CaptureSession* session)
         }
         buf.insert(buf.end(), tmp, tmp + n);
 
-        while (buf.size() >= HDR_SIZE) {
+        while (buf.size() >= BURST_HDR_V1) {
             // Find magic byte
             auto it = std::find(buf.begin(), buf.end(), PKT_MAGIC);
             if (it == buf.end()) { buf.clear(); break; }
             if (it != buf.begin()) buf.erase(buf.begin(), it);
-            if (buf.size() < HDR_SIZE) break;
 
-            uint8_t  ver   = buf[1];
-            uint16_t flags = uint16_t(buf[2]) | (uint16_t(buf[3]) << 8);
-            uint32_t rate  = uint32_t(buf[4])  | (uint32_t(buf[5])  << 8)
-                           | (uint32_t(buf[6]) << 16) | (uint32_t(buf[7]) << 24);
-            uint32_t nsamp = uint32_t(buf[8])  | (uint32_t(buf[9])  << 8)
-                           | (uint32_t(buf[10]) << 16) | (uint32_t(buf[11]) << 24);
-            uint32_t trig  = uint32_t(buf[12]) | (uint32_t(buf[13]) << 8)
-                           | (uint32_t(buf[14]) << 16) | (uint32_t(buf[15]) << 24);
-            uint32_t seq   = uint32_t(buf[16]) | (uint32_t(buf[17]) << 8)
-                           | (uint32_t(buf[18]) << 16) | (uint32_t(buf[19]) << 24);
-
-            if (ver != PKT_VERSION || rate == 0 || nsamp == 0 || nsamp > MAX_SAMPLES) {
+            BurstHeader hdr;
+            const BurstParse pr = parse_burst_header(buf.data(), buf.size(), hdr);
+            if (pr == BurstParse::NeedMore) break;
+            if (pr == BurstParse::Bad) {
                 buf.erase(buf.begin());   // false magic, resync
                 continue;
             }
+            const uint16_t flags = hdr.flags;
+            const uint32_t rate  = hdr.rate;
+            const uint32_t nsamp = hdr.nsamp;
+            const uint32_t trig  = hdr.trigger_index;
+            const uint32_t seq   = hdr.seq;
+            const uint32_t HDR_SIZE = uint32_t(hdr.header_size);
 
             uint32_t frame_len = HDR_SIZE + nsamp;
             if (buf.size() < frame_len) break;   // wait for the rest of the burst
@@ -212,13 +209,15 @@ void StmDataSource::reader_loop(CaptureSession* session)
                 std::cerr << "[StmDataSource] Burst seq=" << seq
                            << " auto-triggered, no edge seen\n";
 
-            /* Use wall-clock time so bursts align with the scrolling view.
-             * Each sample within the burst is offset from that anchor by its
-             * index divided by the burst's own sample rate. */
+            /* Place the burst on the timeline. With firmware version 2 this uses
+             * the device clock carried in the header, so the gaps between bursts
+             * are exact; arrival time is only used to anchor the first burst
+             * (and for version 1 firmware, which has no device clock). Each
+             * sample is offset from sample 0 by its index over the sample rate. */
             auto    now      = std::chrono::steady_clock::now();
             double  wall_ns  = std::chrono::duration<double, std::nano>(now - t_start).count();
             double  ns_per_sample = 1e9 / double(rate);
-            double  burst_t0_ns   = wall_ns - double(nsamp) * ns_per_sample;
+            double  burst_t0_ns   = burst_clock.place(hdr, wall_ns);
 
             // Decode into a local batch and push it in one call -- taking the
             // digital buffer's lock per individual transition (there can be
@@ -300,7 +299,7 @@ void StmDataSource::reader_loop(CaptureSession* session)
              * expensive until the GUI stops responding. Keep a generous
              * rolling window of retained history instead. */
             static constexpr double RETENTION_NS = 30.0 * 1e9; // 30 s
-            session->digital_buffer().trim_before(wall_ns - RETENTION_NS);
+            session->digital_buffer().trim_before(burst_clock.last_end_ns() - RETENTION_NS);
 
             if (data_cb_) data_cb_();
         }

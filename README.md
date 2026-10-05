@@ -115,7 +115,8 @@ cd build && ctest --output-on-failure
 
 ### Phase 2 — Real hardware acquisition
 - [x] eScope (STM32) USB firmware — 8ch @ 48 MS/s raw sample bursts over CDC-ACM (`StmDataSource`)
-- [x] Hardware trigger (trigger sample index reported per burst)
+- [x] Hardware trigger (trigger sample index reported per burst; edge and channel, Auto or Normal set from the app)
+- [x] Device clock: bursts placed by a device timestamp, not by USB arrival time
 - [ ] USB 3 bulk transfer
 - [ ] KissFFT integration (replace Phase 1 DFT)
 - [ ] Session load (deserializer)
@@ -145,11 +146,45 @@ cd build && ctest --output-on-failure
 ## eScope hardware source
 
 `StmDataSource` reads triggered burst frames from the eScope (STM32) firmware
-over USB CDC-ACM (115200 baud). Each frame is a 24-byte header (magic `0xE7`,
+over USB CDC-ACM (115200 baud). Each frame is a header (magic `0xE7`,
 version, flags, sample rate, sample count, trigger sample index, sequence
-number) followed by that many raw sample bytes, one bit per digital channel.
+number; 24 bytes for version 1, 32 bytes for version 2) followed by that many
+raw sample bytes, one bit per digital channel.
+
+Version 2 frames also carry the device time of the first sample (a free-running
+240 MHz timer on the STM32). The device does not sample while a burst uploads, so
+bursts are placed on the timeline by this device clock (`BurstClock` in
+`core/hal/BurstFrame.h`) instead of by when they arrived over USB; the gaps
+between bursts are then exact and the position of an event no longer wobbles by
+the USB arrival jitter. Version 1 firmware still works and falls back to arrival
+time.
+
 The GUI toggles between this and the simulated source from the toolbar's
 "Connect eScope" button; `enumerate()` looks for `/dev/ttyACM*`.
+
+If Connect eScope never connects, check that the port exists (`ls /dev/ttyACM*`,
+`lsusb` should list an STMicroelectronics device) and that nothing else has it
+open. A board that runs (its LED blinks) but never shows up on USB is probably
+running the signal generator firmware, which never starts USB; its LED toggles
+every 100 ms instead of every 500 ms. Flash the scope build (see the firmware
+repo). The app needs firmware that sends frame version 2 or 1; both are accepted.
+
+### Trigger setup
+
+The trigger is evaluated on the device. `StmDataSource::configure()` sends the
+session's trigger setting to it whenever it changes and on every Run: an edge
+(rising, falling or either) on any of D0-D7, and Auto or Normal mode.
+
+- **Default:** D0 rising edge, Auto mode (the device captures anyway after 500 ms
+  without a trigger, like a scope's Auto).
+- **AUTO / SINGLE** push the mode to the device (SINGLE and Normal wait for a real
+  trigger, Auto does not).
+- **Trigger position** (how much of the 4.78 ms capture comes before the trigger)
+  is fixed at the left edge, so almost the whole window is after the trigger and a
+  whole event fits. It is not exposed in the GUI.
+- The capture inputs have a pull-down so unconnected channels read low;
+  `StmDataSource::set_input_nopull()` can release it per channel for open-drain
+  buses. The GUI does not expose it.
 
 ## Waveform view controls
 
