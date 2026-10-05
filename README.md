@@ -248,6 +248,10 @@ PNGs without the OpenGL window:
   UART, SDA/SCL for I2C (a pin can't be used for both roles).
 - **UART** — baud rate is auto-detected per line; decoded text shows the whole
   capture.
+  Each capture burst is decoded on its own: a burst usually begins and ends
+  mid-byte, so the decoder tries the first few start-bit candidates and keeps
+  the alignment with the fewest framing errors, and drops a byte that is cut off
+  by the end of a burst. Nothing is decoded across the gap between bursts.
 - **I2C** — shows the bus speed (median SCL period) and a hex log of every
   transaction in the capture, one line per transaction:
   `<time>  S [3C W] A 00 A 21 A P` (`A` = ACK, `N` = NACK, `Sr` = repeated

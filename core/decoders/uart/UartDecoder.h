@@ -34,6 +34,11 @@ private:
     std::vector<DecodedEvent> decode_channel(const DigitalBuffer& buf,
                                               uint8_t ch_idx,
                                               const std::string& role) const;
+
+    /// Decode one burst (edges from a level snapshot up to the next one) on its own.
+    void decode_burst(const DigitalEdge* edges, std::size_t n, uint8_t ch_idx,
+                      const std::string& role, double bit_ns, bool idle_level,
+                      int frame_bits, std::vector<DecodedEvent>& out) const;
 };
 
 } // namespace escope
