@@ -5,6 +5,9 @@
 #define ANALOG_ENABLED 0
 
 #include "waveform/WaveformWidget.h"
+#include <QToolTip>
+#include "waveform/AnnotationPainter.h"
+#include <QFontMetrics>
 #include "session/CaptureSession.h"
 
 #if ANALOG_ENABLED
@@ -63,6 +66,7 @@ WaveformWidget::WaveformWidget(QWidget* p)
 {
     setMinimumHeight(300);
     setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);          // annotation tooltips follow the mouse
 #if ANALOG_ENABLED
     snap_[0].reserve(4*1024*1024);
     snap_[1].reserve(4*1024*1024);
@@ -98,14 +102,22 @@ WaveformWidget::ChannelLayout WaveformWidget::analogLayout(std::size_t) const {
 #endif
 
 float WaveformWidget::digitalRowY(std::size_t ch, bool hi) const {
-    float H       = height();
-    float digi_top = H * DIG_TOP_FRAC;
-    float digi_h   = H * DIG_H_FRAC;
-    float row_h    = digi_h / DIG_CHANNELS;
-    float top      = digi_top + ch * row_h;
-    // Signal occupies 70% of row height, centred
-    float margin   = row_h * 0.15f;
-    return hi ? top + margin : top + row_h - margin;
+    // Rows are shared among the VISIBLE channels, the same layout the channel
+    // labels, row separators and cursor dots use (this used to index by channel
+    // number, which put the traces in a different place than their labels).
+    const float H        = height();
+    const float digi_top = H * DIG_TOP_FRAC;
+    const float digi_h   = H * DIG_H_FRAC;
+    const int   n_vis    = visibleCount(ch_visible_);
+    const float row_h    = digi_h / n_vis;
+    const float top      = digi_top + visibleRow(ch_visible_, (int)ch) * row_h;
+
+    // A channel with decoded annotations keeps a lane under its trace.
+    const float lane   = hasAnnotations((int)ch) ? ANNOT_LANE_H + 14.f : 0.f;
+    const float usable = row_h - lane;
+    const float amp    = std::clamp(usable * 0.55f, 24.f, 80.f);   // trace height
+    const float mid    = top + usable * 0.5f;
+    return hi ? mid - amp * 0.5f : mid + amp * 0.5f;
 }
 
 int WaveformWidget::channelAtY(float) const {
@@ -413,19 +425,11 @@ void WaveformWidget::drawOverlay() {
 
     if (!session_) return;
 
-    // Digital channel labels  --  left edge of each row
-    float digi_top = H * DIG_TOP_FRAC;
-    float digi_h   = H * DIG_H_FRAC;
-    float row_h    = digi_h / DIG_CHANNELS;
+    // Digital channel labels  --  left edge of each row, level with its trace
     int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
-
-    int   n_vis_ov  = visibleCount(ch_visible_);
-    float row_h_vis = digi_h / n_vis_ov;
     for (int ch = 0; ch < n_dig; ++ch) {
         if (!ch_visible_[ch]) continue;
-        int   vr      = visibleRow(ch_visible_, ch);
-        float row_top = digi_top + vr * row_h_vis;
-        float row_mid = row_top + row_h_vis * 0.5f;
+        float row_mid = (digitalRowY(ch, true) + digitalRowY(ch, false)) * 0.5f;   // centre of the trace
 
         // Channel label (D0-D7)
         p.setFont(QFont("Monospace", 8, QFont::Bold));
@@ -441,6 +445,8 @@ void WaveformWidget::drawOverlay() {
         p.setPen(lvl ? QColor(80,220,80) : QColor(120,120,120));
         p.drawText(QRect(36, (int)row_mid - 5, 16, 11), Qt::AlignCenter, lvl ? "1" : "0");
     }
+
+    drawAnnotations(p);
 
     // Cursors and measurement panel
     drawCursors(p);
@@ -524,17 +530,13 @@ void WaveformWidget::drawCursors(QPainter& p) {
         p.fillRect(tbox, QColor(0, 0, 0, 170));
         p.drawText(tbox, Qt::AlignCenter, fmt_t(c.t_ns));
 
-        // Logic level for each digital channel at this cursor time
-        float digi_top  = H * DIG_TOP_FRAC;
-        float digi_h    = H * DIG_H_FRAC;
-        int   n_vis_c   = visibleCount(ch_visible_);
-        float row_h     = digi_h / n_vis_c;
+        // Logic level for each digital channel at this cursor time (a dot on the trace)
         int n_dig = std::min((int)escope::CaptureSession::MAX_DIGITAL_CH, DIG_CHANNELS);
         for (int ch = 0; ch < n_dig; ++ch) {
             if (!ch_visible_[ch]) continue;
             if (!session_->digital_info(ch).enabled) continue;
             bool lvl = session_->digital_buffer().level_at(ch, c.t_ns);
-            float row_mid = digi_top + visibleRow(ch_visible_,ch) * row_h + row_h * 0.5f;
+            float row_mid = digitalRowY(ch, true);
             p.setPen(Qt::NoPen);
             p.setBrush(lvl ? QColor(cc.red(),cc.green(),cc.blue(),160) : QColor(0,0,0,0));
             if (lvl) p.drawEllipse(QPointF(x, row_mid), 3, 3);
@@ -613,6 +615,54 @@ void WaveformWidget::drawMeasurementPanel(QPainter& p) {
     for (int i = 0; i < lines.size(); ++i) {
         QRect r = box.adjusted(12, pad + i*lh, -12, 0);
         p.drawText(r, Qt::AlignLeft, lines[i]);
+    }
+}
+
+// --- Protocol annotations ---------------------------------------------------
+
+void WaveformWidget::setAnnotations(int channel,
+        std::shared_ptr<const std::vector<escope::DecodedEvent>> events) {
+    auto it = std::find_if(lanes_.begin(), lanes_.end(),
+        [&](const AnnotationLane& l) { return l.channel == channel; });
+    if (it == lanes_.end()) { lanes_.push_back({channel, {}}); it = lanes_.end() - 1; }
+    it->index.build(std::move(events));
+    update();
+}
+
+void WaveformWidget::clearAnnotations() {
+    lanes_.clear();
+    hit_boxes_.clear();
+    update();
+}
+
+bool WaveformWidget::hasAnnotations(int channel) const {
+    return std::any_of(lanes_.begin(), lanes_.end(),
+        [&](const AnnotationLane& l) { return l.channel == channel && !l.index.empty(); });
+}
+
+void WaveformWidget::drawAnnotations(QPainter& p) {
+    hit_boxes_.clear();
+    if (lanes_.empty() || !session_) return;
+
+    const int    W    = width();
+    const double span = time_per_div_ns_ * HDIVS;
+    escope::AnnotationView view;
+    view.t0_ns     = time_offset_ns_;
+    view.t1_ns     = time_offset_ns_ + span;
+    view.px_per_ns = W / span;
+
+    AnnotationLaneGeometry g;
+    g.t0_ns     = time_offset_ns_;
+    g.px_per_ns = W / span;
+    g.width     = W;
+    g.height    = ANNOT_LANE_H;
+
+    for (const auto& lane : lanes_) {
+        if (lane.channel < 0 || lane.channel >= 8 || !ch_visible_[lane.channel]) continue;
+        g.y = digitalRowY(lane.channel, false) + 10.f;
+        std::vector<AnnotationHit> hits;
+        paintAnnotationLane(p, lane.index.items(view), g, hover_pos_, &hits);
+        for (auto& h : hits) hit_boxes_.push_back({h.rect, h.tip});
     }
 }
 
@@ -847,6 +897,18 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
 
 void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
     float mx = e->position().x(), my = e->position().y(); (void)my;
+    hover_pos_ = e->position();
+    if (!dragging_ && drag_cursor_ < 0 && !rubber_band_active_) {
+        bool over = false;
+        for (const auto& hb : hit_boxes_)
+            if (hb.rect.contains(hover_pos_)) {
+                QToolTip::showText(e->globalPosition().toPoint(), hb.tip, this);
+                over = true;
+                break;
+            }
+        if (!over) QToolTip::hideText();
+        update();                               // hover outline
+    }
     if (drag_cursor_ >= 0 && drag_cursor_ < (int)cursors_.size()) {
         auto& c = cursors_[drag_cursor_];
         if (c.type == WaveformCursor::Type::Vertical)

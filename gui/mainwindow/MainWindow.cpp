@@ -321,6 +321,7 @@ void MainWindow::setupToolBar() {
         auto* act = ch_menu->addAction(QString("D%1").arg(i));
         act->setCheckable(true);
         act->setChecked(i == 0); /* only D0 shown by default -- see ch_visible_ */
+        ch_actions_[i] = act;
         connect(act, &QAction::toggled, this, [this, i](bool checked) {
             if (waveform_widget_) waveform_widget_->setChannelVisible(i, checked);
         });
@@ -434,6 +435,21 @@ void MainWindow::setupDockWidgets() {
     protocol_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
     addDockWidget(Qt::RightDockWidgetArea, protocol_dock_);
     protocol_dock_->hide();   // shown only once a protocol is picked in the toolbar
+
+    // Decoded protocol events are drawn on the waveform, on a lane under the channel
+    // (S, P, hex bytes, A / N); the channels the protocol uses are shown automatically.
+    connect(protocol_panel_, &ProtocolPanel::annotationsChanged, this,
+        [this](int ch, std::shared_ptr<const std::vector<escope::DecodedEvent>> ev) {
+            waveform_widget_->setAnnotations(ch, std::move(ev));
+        });
+    connect(protocol_panel_, &ProtocolPanel::annotationsCleared, this,
+        [this]{ waveform_widget_->clearAnnotations(); });
+    connect(protocol_panel_, &ProtocolPanel::pinsChanged, this,
+        [this](QVector<int> chans) {
+            for (int ch : chans)
+                if (ch >= 0 && ch < 8 && ch_actions_[ch] && !ch_actions_[ch]->isChecked())
+                    ch_actions_[ch]->setChecked(true);      // also shows it via the existing toggle
+        });
 }
 
 void MainWindow::setupStatusBar() {
@@ -516,8 +532,8 @@ void MainWindow::onUpdateDisplay() {
         measure_panel_->updateFrom(*session_);
         channel_panel_->updateFrom(*session_);
     }
-    // Protocol decode is heavier: ~2 Hz
-    if (display_frame_ % 15 == 0) {
+    // Protocol decode is heavier: ~5 Hz (skipped when nothing changed)
+    if (display_frame_ % 6 == 0) {
         const double t0 = waveform_widget_->timeOffset();
         protocol_panel_->updateFrom(*session_, t0,
             t0 + waveform_widget_->timePerDiv() * WaveformWidget::HDIVS);

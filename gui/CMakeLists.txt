@@ -6,6 +6,8 @@ qt_add_executable(embeddedscope
     waveform/WaveformWidget.h
     waveform/WaveformRenderer.cpp
     waveform/WaveformRenderer.h
+    waveform/AnnotationPainter.cpp
+    waveform/AnnotationPainter.h
     timeline/TimelineWidget.cpp
     timeline/TimelineWidget.h
     panels/MeasurementPanel.cpp
@@ -37,4 +39,15 @@ target_include_directories(embeddedscope
 set_target_properties(embeddedscope PROPERTIES
     WIN32_EXECUTABLE TRUE   # No console window on Windows
     MACOSX_BUNDLE   TRUE
+)
+
+# Developer tool: renders the protocol annotation lane for a simulated I2C bus to PNGs
+qt_add_executable(annotation_preview
+    waveform/preview/annotation_preview.cpp
+    waveform/AnnotationPainter.cpp
+)
+target_link_libraries(annotation_preview PRIVATE escope_core Qt6::Core Qt6::Gui)
+target_include_directories(annotation_preview PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/core
 )

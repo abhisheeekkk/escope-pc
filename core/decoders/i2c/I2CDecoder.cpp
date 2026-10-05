@@ -106,9 +106,12 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
     int      nbits     = 0;
     unsigned byte      = 0;
     double   byte_t0   = 0;
+    double   last_fall = -1;      // most recent SCL falling edge
+    long     pending   = -1;      // byte event still waiting for its closing SCL fall
 
     std::vector<uint8_t> hbits;   // headless: SDA sampled on each rising SCL
     std::vector<double>  hts;     //           and when
+    std::vector<double>  hfall;   //           and the SCL fall that preceded each bit
 
     // Recover byte alignment of the collected headless bits from the ACK slots
     // and emit them: a "~" marker (alignment was inferred) then the bytes.
@@ -139,22 +142,27 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
                     for (int b = 0; b < 8; ++b) v = (v << 1) | (hbits[base + b] ? 1u : 0u);
                     const bool ack = !hbits[base + 8];
                     if (!marked) {
-                        push(hts[base], hts[base], DecodedEvent::Type::Control, "~",
+                        push(hfall[base], hfall[base], DecodedEvent::Type::Control, "~",
                              "Burst began mid-transfer: byte alignment inferred from ACK slots",
                              false, -1);
                         marked = true;
                     }
-                    push(hts[base], hts[base + 8], DecodedEvent::Type::Data,
+                    // Box runs fall-to-fall: from the SCL fall before bit 7 to the
+                    // SCL fall after the ACK clock (= start of the next byte).
+                    const double t0 = hfall[base];
+                    const double t1 = base + 9 < n ? hfall[base + 9] : hts[base + 8];
+                    push(t0, t1, DecodedEvent::Type::Data,
                          "0x" + hex2(v) + (ack ? " ACK" : " NACK"),
                          "Data byte 0x" + hex2(v) + " (alignment inferred)", false, static_cast<int>(v));
                 }
             } else {
-                push(hts.front(), hts.back(), DecodedEvent::Type::Error, "[NO SYNC]",
+                push(hfall.front(), hts.back(), DecodedEvent::Type::Error, "[NO SYNC]",
                      "Could not infer byte alignment from " + std::to_string(n) + " clocks", true, -1);
             }
         }
         hbits.clear();
         hts.clear();
+        hfall.clear();
     };
 
     auto abort_partial = [&](double t) {
@@ -192,7 +200,7 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
             if (t != last_snap_t) {
                 last_snap_t = t;
                 if (in_xfer) abort_partial(t); else flush_headless();
-                in_xfer = false; have_addr = false; nbits = 0; byte = 0;
+                in_xfer = false; have_addr = false; nbits = 0; byte = 0; pending = -1; last_fall = -1;
             }
             (take_sda ? sda : scl) = lvl;
             continue;
@@ -205,7 +213,7 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
             if (!sda) {                               // SDA fell with SCL high: START
                 const bool repeated = in_xfer;
                 if (in_xfer) abort_partial(t); else flush_headless();
-                in_xfer = true; have_addr = false; nbits = 0; byte = 0;
+                in_xfer = true; have_addr = false; nbits = 0; byte = 0; pending = -1; last_fall = -1;
                 push(t, t, DecodedEvent::Type::Control, repeated ? "Sr" : "START",
                      repeated ? "Repeated START" : "START condition", false, -1);
             } else {                                  // SDA rose with SCL high: STOP
@@ -213,20 +221,30 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
                 if (in_xfer) abort_partial(t); else flush_headless();
                 if (in_xfer || had_bits)
                     push(t, t, DecodedEvent::Type::Control, "STOP", "STOP condition", false, -1);
-                in_xfer = false; have_addr = false; nbits = 0; byte = 0;
+                in_xfer = false; have_addr = false; nbits = 0; byte = 0; pending = -1;
             }
         } else {
             if (lvl == scl) continue;
             scl = lvl;
-            if (!scl) continue;                       // only sample on rising SCL
-
-            if (!in_xfer) {                           // headless: just collect the bit
-                hbits.push_back(sda ? 1 : 0);
-                hts.push_back(t);
+            if (!scl) {                               // SCL fell: data may change now
+                last_fall = t;
+                if (pending >= 0) {                   // the ACK clock is over: close the box
+                    events[static_cast<std::size_t>(pending)].end_ns = t;
+                    pending = -1;
+                }
                 continue;
             }
 
-            if (nbits == 0) byte_t0 = t;
+            // Sampling happens on rising SCL; boxes are drawn from the preceding fall.
+            const double fall_t = last_fall >= 0 ? last_fall : t;
+            if (!in_xfer) {                           // headless: just collect the bit
+                hbits.push_back(sda ? 1 : 0);
+                hts.push_back(t);
+                hfall.push_back(fall_t);
+                continue;
+            }
+
+            if (nbits == 0) byte_t0 = fall_t;
             if (nbits < 8) {
                 byte = (byte << 1) | (sda ? 1u : 0u);
                 ++nbits;
@@ -245,6 +263,7 @@ std::vector<DecodedEvent> I2CDecoder::decode(const DigitalBuffer& buf,
                          "0x" + hex2(byte) + (ack ? " ACK" : " NACK"),
                          "Data byte 0x" + hex2(byte), false, static_cast<int>(byte));
                 }
+                pending = static_cast<long>(events.size()) - 1;
                 nbits = 0;
                 byte  = 0;
             }

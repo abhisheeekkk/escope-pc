@@ -12,6 +12,7 @@
 
 #include "acquisition/SampleBuffer.h"
 #include "acquisition/DigitalBuffer.h"
+#include "decoders/base/AnnotationLayout.h"
 
 #include <memory>
 #include <vector>
@@ -104,6 +105,13 @@ public:
 
     QImage grabScreenshot();
 
+    /// Decoded protocol events drawn on a lane under channel @p channel (S, P, hex
+    /// bytes with A / N). @p events must be sorted by time. The widget keeps the
+    /// shared list and re-lays it out for the current zoom on every repaint.
+    void setAnnotations(int channel, std::shared_ptr<const std::vector<escope::DecodedEvent>> events);
+    void clearAnnotations();
+    bool hasAnnotations(int channel) const;
+
 signals:
     void cursorsChanged();
     void timeDivChanged(double ns);
@@ -131,6 +139,7 @@ private:
     void drawAnalogChannel(std::size_t ch);
     void drawDigitalChannel(std::size_t ch);
     void drawOverlay();
+    void drawAnnotations(QPainter& p);
     void drawCursors(QPainter& p);
     void drawMeasurementPanel(QPainter& p);
 
@@ -141,6 +150,14 @@ private:
     void   clampTimeOffset();
 
     void   updateCursorVoltages(WaveformCursor& c);
+
+    // Protocol annotation lanes
+    struct AnnotationLane { int channel; escope::AnnotationIndex index; };
+    struct HitBox { QRectF rect; QString tip; };
+    static constexpr float ANNOT_LANE_H = 26.f;
+    std::vector<AnnotationLane> lanes_;
+    std::vector<HitBox>         hit_boxes_;      ///< filled while painting, used for tooltips
+    QPointF                     hover_pos_ {-1, -1};
 
     // OpenGL
     QOpenGLShaderProgram     shader_;

@@ -329,3 +329,24 @@ TEST(I2CDecoder, FastModePlusAtTheSpecMinimums) {
 TEST(I2CDecoder, SdaChangeInTheSameSampleAsTheClockFallAtSpeed) {
     expect_clean_decode({780, 400, 0, 150, 0}, 5);
 }
+
+// A byte box runs from the SCL fall before its first bit to the SCL fall after
+// its ACK clock, so consecutive bytes meet exactly and the ACK clock is inside.
+TEST(I2CDecoder, ByteBoxesSpanFallToFall) {
+    Bus b;
+    b.start();
+    const double first_fall = b.t - T;           // SCL fell at the end of start()
+    b.byte(0xA0, true);
+    const double after_addr = b.t - T;           // SCL fall that ended the ACK clock
+    b.byte(0x12, true);
+    const double after_data = b.t - T;
+    b.stop();
+
+    auto ev = run(b);
+    ASSERT_EQ(ev.size(), 4u);
+    EXPECT_DOUBLE_EQ(ev[1].start_ns, first_fall);
+    EXPECT_DOUBLE_EQ(ev[1].end_ns,   after_addr);
+    EXPECT_DOUBLE_EQ(ev[2].start_ns, after_addr);   // abuts the address box
+    EXPECT_DOUBLE_EQ(ev[2].end_ns,   after_data);
+    EXPECT_GT(ev[3].start_ns, ev[2].end_ns);        // STOP comes after the box
+}

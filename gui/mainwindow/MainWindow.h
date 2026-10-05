@@ -63,6 +63,7 @@ private:
     QAction*           act_single_       = nullptr;
     QAction*           act_auto_         = nullptr;
 
+    QAction*           ch_actions_[8]    = {};   ///< the toolbar Select menu entries D0-D7
     QLabel*            status_label_     = nullptr;
     QTimer*            display_timer_    = nullptr;
 

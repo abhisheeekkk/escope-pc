@@ -69,6 +69,10 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     };
     connect(tx_, &QComboBox::currentIndexChanged, this, [=]{ exclude(tx_, rx_); });
     connect(rx_, &QComboBox::currentIndexChanged, this, [=]{ exclude(rx_, tx_); });
+    // Changing a pin invalidates the annotations; show the chosen channels right away.
+    auto pinsMoved = [this]{ last_sig_.clear(); cache_valid_ = false; dropAnnotations(); emitPins(); };
+    connect(tx_, &QComboBox::currentIndexChanged, this, pinsMoved);
+    connect(rx_, &QComboBox::currentIndexChanged, this, pinsMoved);
     exclude(tx_, rx_);
     exclude(rx_, tx_);
     form->addRow("TX pin:", tx_);
@@ -84,6 +88,7 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
 
     text_ = new QPlainTextEdit(this);
     text_->setReadOnly(true);
+    text_->setLineWrapMode(QPlainTextEdit::NoWrap);   // one transaction per line, scroll sideways
     text_->setPlaceholderText("Decoded text (whole capture)");
     text_->setStyleSheet("background:#111; color:#00E666; font-family:monospace; font-size:11px;");
     root->addWidget(text_, 1);
@@ -103,9 +108,26 @@ void ProtocolPanel::fillChannelCombo(QComboBox* c, int select) {
     c->setCurrentIndex(select + 1);
 }
 
+void ProtocolPanel::emitPins() {
+    if (protocol_.isEmpty()) return;
+    QVector<int> chans;
+    for (const QComboBox* c : {tx_, rx_}) {
+        const int ch = c->currentData().toInt();
+        if (ch >= 0) chans << ch;
+    }
+    if (!chans.isEmpty()) emit pinsChanged(chans);
+}
+
+void ProtocolPanel::dropAnnotations() {
+    if (annot_active_) { annot_active_ = false; emit annotationsCleared(); }
+}
+
 void ProtocolPanel::setProtocol(const QString& name) {
+    last_sig_.clear();
+    cache_valid_ = false;
+    dropAnnotations();
     protocol_ = name;
-    title_->setText(name.isEmpty() ? QString() : name + " decoder");
+    title_->setText(name.isEmpty() ? QString() : name);
     // The two pin pickers double as TX/RX (UART) and SDA/SCL (I2C).
     const bool i2c = (name == "I2C");
     if (auto* l = qobject_cast<QLabel*>(form_->labelForField(tx_))) l->setText(i2c ? "SDA pin:" : "TX pin:");
@@ -135,10 +157,34 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
     if (protocol_.isEmpty()) return;
 
     const auto& buf = session.digital_buffer();
+
+    // Decoding walks the whole history, so only redo it when its inputs changed
+    // (new data, pins, Clear). If only the view moved (pan / zoom while paused) the
+    // cached events are listed again for the new window, and if nothing at all
+    // changed (paused, or between bursts) there is nothing to do.
+    bool redecode;
+    {
+        std::vector<double> sig = {static_cast<double>(tx_->currentIndex()),
+                                   static_cast<double>(rx_->currentIndex()),
+                                   clear_before_ns_, buf.time_range_ns().second};
+        for (const QComboBox* c : {tx_, rx_}) {
+            const int ch = c->currentData().toInt();
+            if (ch >= 0) sig.push_back(static_cast<double>(buf.edge_count(static_cast<uint8_t>(ch))));
+        }
+        const bool data_changed = !cache_valid_ || sig != last_sig_;
+        const bool view_changed = view_t0_ns != last_view0_ || view_t1_ns != last_view1_;
+        if (!data_changed && !view_changed) return;
+        last_sig_   = sig;
+        last_view0_ = view_t0_ns;
+        last_view1_ = view_t1_ns;
+        redecode    = data_changed;
+    }
+
     std::vector<escope::DecodedEvent> events;
     const bool i2c = (protocol_ == "I2C");
     std::size_t glitches = 0;      // short pulses the decoder ignored (I2C)
 
+    if (redecode) {
     if (i2c) {
         const int sda = tx_->currentData().toInt();
         const int scl = rx_->currentData().toInt();
@@ -147,6 +193,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
             baud_->setText("Speed: --");
             output_->clear();
             text_->clear();
+            dropAnnotations();
             return;
         }
         escope::I2CDecoder dec;
@@ -179,6 +226,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
             baud_->setText("Baud: auto");
             output_->clear();
             text_->clear();
+            dropAnnotations();
             return;
         }
 
@@ -256,6 +304,30 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         if (!rx_text.isEmpty()) out += (out.isEmpty() ? "" : "\n") + QString("RX: ") + tail(rx_text);
         text_->setPlainText(out);
         text_->verticalScrollBar()->setValue(text_->verticalScrollBar()->maximum());
+    }
+
+    // Hand the whole decoded stream (not just the visible window) to the waveform:
+    // it lays it out for whatever zoom is current, one lane per channel.
+    {
+        std::sort(events.begin(), events.end(),
+            [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
+        for (const QComboBox* c : {tx_, rx_}) {
+            const int ch = c->currentData().toInt();
+            if (ch < 0) continue;
+            if (i2c && c == rx_) continue;                 // I2C: the lane belongs to SDA
+            auto lane = std::make_shared<std::vector<escope::DecodedEvent>>();
+            for (const auto& e : events)
+                if (e.channel == static_cast<uint8_t>(ch)) lane->push_back(e);
+            emit annotationsChanged(ch, std::move(lane));
+        }
+        annot_active_ = true;
+    }
+    cache_events_   = events;
+    cache_glitches_ = glitches;
+    cache_valid_    = true;
+    } else {
+        events   = cache_events_;
+        glitches = cache_glitches_;
     }
 
     events.erase(std::remove_if(events.begin(), events.end(),

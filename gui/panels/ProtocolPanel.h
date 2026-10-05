@@ -1,6 +1,10 @@
 #pragma once
 #include <QWidget>
 #include <QString>
+#include <QVector>
+#include <memory>
+#include <vector>
+#include "decoders/base/IDecoder.h"
 
 namespace escope { class CaptureSession; }
 class QComboBox;
@@ -27,9 +31,28 @@ public:
     /// Hide everything decoded so far (new frames still appear).
     void clearDecoded();
 
+signals:
+    /// The full decoded stream for one channel (sorted by time), for the waveform
+    /// to draw as S / P / hex / A / N annotations under that channel.
+    void annotationsChanged(int channel,
+                            std::shared_ptr<const std::vector<escope::DecodedEvent>> events);
+    /// The decoder was switched off or its pins changed: remove the annotations.
+    void annotationsCleared();
+    /// Channels the chosen protocol uses (SDA and SCL, or TX / RX), so the main
+    /// view can show them.
+    void pinsChanged(QVector<int> channels);
+
 private:
     void fillChannelCombo(QComboBox* c, int select);
 
+    void emitPins();
+    void dropAnnotations();
+    bool                 annot_active_ = false;   ///< annotations are currently on the waveform
+    std::vector<double>  last_sig_;               ///< data inputs of the last decode, to skip an identical one
+    bool                 cache_valid_ = false;    ///< cache_events_ matches last_sig_
+    std::vector<escope::DecodedEvent> cache_events_;   ///< last decode (all events), re-listed when only the view moves
+    std::size_t          cache_glitches_ = 0;
+    double               last_view0_ = 0, last_view1_ = 0;
     const escope::CaptureSession* session_ = nullptr;  ///< last session seen by updateFrom
     double          clear_before_ns_ = -1.0;           ///< frames starting before this are hidden
     QFormLayout*    form_    = nullptr;

@@ -186,6 +186,37 @@ session's trigger setting to it whenever it changes and on every Run: an edge
   `StmDataSource::set_input_nopull()` can release it per channel for open-drain
   buses. The GUI does not expose it.
 
+### Decoded data on the waveform
+
+After choosing a protocol and its pins in the Protocol menu, the decoded data is
+drawn on the main view itself, on a lane under the channel (SDA for I2C, TX and RX
+for UART), and the pins' channels are shown automatically:
+
+- **I2C:** `S` (green) for START, `Sr` (orange) for repeated START, `P` (red) for
+  STOP, a blue box for the address with its R/W (`3C W`), a teal box per data byte
+  in hex, and a small `A` (green) or `N` (red, with a red outline) for ACK or NACK
+  at the end of each byte. `~` marks a capture that began mid-transfer; a red box
+  with `!` is a decode error.
+- **UART:** a box per frame with the hex value, and the character when there is
+  room (`LF`, `CR` for line ends).
+- **It follows the zoom.** Zoomed in, every byte is its own box. As you zoom out a
+  box that can no longer hold its text collapses: a whole transfer becomes one bar
+  with a summary (`3C W · 36B`), and when even those get closer than a couple of
+  pixels they merge into a `xN` bar. Zoom back in and the detail returns. Hover a
+  box for a tooltip (what it is, ACK or NACK, and its time).
+- It is live: the lane refreshes about five times a second as bursts arrive. The
+  decode only reruns when the data, the pins or Clear changed, so panning and
+  zooming while paused cost nothing.
+- Rows now follow the visible channels, the same layout the channel labels use,
+  so each trace sits level with its label and the lane under it.
+
+The layout (what is drawn at which zoom) is `core/decoders/base/AnnotationLayout`
+and is unit tested; the painting is `gui/waveform/AnnotationPainter`. The developer
+tool `annotation_preview` renders a simulated I2C bus at several zoom levels to
+PNGs without the OpenGL window:
+
+    QT_QPA_PLATFORM=offscreen ./build/bin/annotation_preview /tmp/annotations
+
 ## Waveform view controls
 
 - **T/div** — pick a preset from the dropdown, or choose "Custom..." to enter
@@ -221,7 +252,12 @@ session's trigger setting to it whenever it changes and on every Run: an edge
   transaction in the capture, one line per transaction:
   `<time>  S [3C W] A 00 A 21 A P` (`A` = ACK, `N` = NACK, `Sr` = repeated
   START, `~` = burst began mid-transfer, `!INCOMPLETE` / `!NO SYNC` = errors).
-  The log keeps the newest 5000 lines.
+  The log keeps the newest 5000 lines and doesn't wrap: one transaction per
+  line, scroll sideways for long ones. Below it is a list of the frames in the
+  visible window (`46.153113 s  0x45 ACK`).
+- **Timing** — on the waveform each I2C byte box runs from the SCL falling edge
+  before its first bit to the SCL falling edge after its ACK clock, so boxes
+  meet exactly and the ACK clock is inside; bits are still sampled on rising SCL.
 - **Clear / Copy** — Clear hides everything decoded so far; Copy puts the whole
   log on the clipboard. The log is never cleared by docking/layout changes,
   only by switching protocol or pressing Clear.

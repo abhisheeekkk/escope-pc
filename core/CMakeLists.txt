@@ -11,6 +11,7 @@ add_library(escope_core STATIC
     analysis/Measurements.cpp
     analysis/FFT.cpp
     decoders/base/DecoderRegistry.cpp
+    decoders/base/AnnotationLayout.cpp
     decoders/uart/UartDecoder.cpp
     decoders/spi/SPIDecoder.cpp
     decoders/i2c/I2CDecoder.cpp
