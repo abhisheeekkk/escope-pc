@@ -175,3 +175,16 @@ TEST(AnnotationLayout, WorksOnRealDecoderOutput) {
     EXPECT_EQ(items[1].text, "3C W");
     EXPECT_EQ(items[2].text, "40");
 }
+
+TEST(AnnotationLayout, CanFrameMapsToMarkersAndFields) {
+    DecodedEvent sof{}; sof.type = DecodedEvent::Type::Control; sof.label = "SOF";
+    DecodedEvent eof = sof; eof.label = "EOF";
+    DecodedEvent id{}; id.type = DecodedEvent::Type::Address; id.label = "ID 0x123"; id.value = 0x123;
+    DecodedEvent dlc{}; dlc.type = DecodedEvent::Type::Annotation; dlc.label = "DLC 8";
+    EXPECT_EQ(make_annotation_item(sof, 0).kind, AnnotationItem::Kind::Start);
+    EXPECT_EQ(make_annotation_item(eof, 1).kind, AnnotationItem::Kind::Stop);
+    auto a = make_annotation_item(id, 2);
+    EXPECT_EQ(a.kind, AnnotationItem::Kind::Address);
+    EXPECT_EQ(a.text, "0x123");
+    EXPECT_EQ(make_annotation_item(dlc, 3).kind, AnnotationItem::Kind::Field);
+}

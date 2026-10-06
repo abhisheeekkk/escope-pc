@@ -2,6 +2,7 @@
 #include "session/CaptureSession.h"
 #include "decoders/uart/UartDecoder.h"
 #include "decoders/i2c/I2CDecoder.h"
+#include "decoders/can/CANDecoder.h"
 
 #include <QComboBox>
 #include <QFormLayout>
@@ -16,6 +17,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <algorithm>
+#include <map>
 
 namespace {
 constexpr int MAX_LINES = 500;
@@ -130,12 +132,13 @@ void ProtocolPanel::setProtocol(const QString& name) {
     title_->setText(name.isEmpty() ? QString() : name);
     // The two pin pickers double as TX/RX (UART) and SDA/SCL (I2C).
     const bool i2c = (name == "I2C");
-    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(tx_))) l->setText(i2c ? "SDA pin:" : "TX pin:");
-    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(rx_))) l->setText(i2c ? "SCL pin:" : "RX pin:");
+    const bool can = (name == "CAN");
+    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(tx_))) l->setText(i2c ? "SDA pin:" : can ? "CAN TX pin:" : "TX pin:");
+    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(rx_))) l->setText(i2c ? "SCL pin:" : can ? "CAN RX pin:" : "RX pin:");
     // Pins are left for the user to choose; start from None on every protocol switch.
     tx_->setCurrentIndex(0);
     rx_->setCurrentIndex(0);
-    text_->setPlaceholderText(i2c ? "Hex log (whole capture)" : "Decoded text (whole capture)");
+    text_->setPlaceholderText((i2c || can) ? "Hex log (whole capture)" : "Decoded text (whole capture)");
     clear_before_ns_ = -1.0;
     output_->clear();
     text_->clear();
@@ -182,10 +185,36 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
 
     std::vector<escope::DecodedEvent> events;
     const bool i2c = (protocol_ == "I2C");
+    const bool can = (protocol_ == "CAN");
     std::size_t glitches = 0;      // short pulses the decoder ignored (I2C)
 
     if (redecode) {
-    if (i2c) {
+    if (can) {
+        // TX = what this node drives, RX = what it sees; each is decoded on its own.
+        const struct { const QComboBox* box; const char* role; } lines[] = {{tx_, "TX"}, {rx_, "RX"}};
+        QStringList rate_text;
+        bool any = false;
+        for (const auto& l : lines) {
+            const int line = l.box->currentData().toInt();
+            if (line < 0) continue;
+            any = true;
+            escope::CANDecoder dec;
+            auto ev = dec.decode(buf, {{"RX", static_cast<uint8_t>(line)}});
+            rate_text << (dec.bitrate_used()
+                ? QString("%1: %2 kbit/s").arg(l.role).arg(dec.bitrate_used() / 1000.0, 0, 'f', 1)
+                : QString("%1: no signal").arg(l.role));
+            events.insert(events.end(), ev.begin(), ev.end());
+        }
+        if (!any) {
+            summary_->setText("Select a CAN TX or RX pin");
+            baud_->setText("Bit rate: auto");
+            output_->clear();
+            text_->clear();
+            dropAnnotations();
+            return;
+        }
+        baud_->setText("Bit rate (auto): " + rate_text.join("   "));
+    } else if (i2c) {
         const int sda = tx_->currentData().toInt();
         const int scl = rx_->currentData().toInt();
         if (sda < 0 || scl < 0) {
@@ -253,7 +282,44 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
 
     // Rebuild the whole decoded stream as text, independent of the visible
     // window, so a long string isn't cut off by zoom/scroll. Per line (TX/RX).
-    if (i2c) {
+    if (can) {
+        std::sort(events.begin(), events.end(),
+            [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
+        // One line per frame and per pin:  <time> TX  ID 0x123  DLC 8  01 02 ...  CRC OK  ACK
+        // Each pin builds its own line, so TX and RX frames never interleave.
+        std::vector<std::pair<double, QString>> done;
+        std::map<int, std::pair<double, QString>> open_line;
+        auto flush = [&](int ch) {
+            auto it = open_line.find(ch);
+            if (it != open_line.end() && !it->second.second.isEmpty()) done.push_back(it->second);
+            open_line.erase(ch);
+        };
+        for (const auto& e : events) {
+            using T = escope::DecodedEvent::Type;
+            const int ch = e.channel;
+            const QString lbl = QString::fromStdString(e.label);
+            if (lbl == "SOF") {
+                flush(ch);
+                open_line[ch] = {e.start_ns, QString("%1 %2").arg(formatTime(e.start_ns), 12)
+                                     .arg(ch == tx_->currentData().toInt() ? " TX" : " RX")};
+            } else if (lbl == "EOF") flush(ch);
+            else {
+                auto& ln = open_line[ch];
+                if (ln.second.isEmpty()) ln = {e.start_ns, QString("%1 %2").arg(formatTime(e.start_ns), 12)
+                                     .arg(ch == tx_->currentData().toInt() ? " TX" : " RX")};
+                if (e.type == T::Data) ln.second += " " + lbl.mid(2);
+                else ln.second += "  " + lbl;
+            }
+        }
+        { std::vector<int> chs; for (auto& kv : open_line) chs.push_back(kv.first); for (int c : chs) flush(c); }
+        std::stable_sort(done.begin(), done.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+        QStringList lines;
+        for (const auto& d : done) lines << d.second;
+        constexpr int MAX_LINES_LOG = 5000;
+        if (lines.size() > MAX_LINES_LOG) lines = lines.mid(lines.size() - MAX_LINES_LOG);
+        text_->setPlainText(lines.join('\n'));
+        text_->verticalScrollBar()->setValue(text_->verticalScrollBar()->maximum());
+    } else if (i2c) {
         std::sort(events.begin(), events.end(),
             [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
         // Hex log of every transaction in the capture (not window-limited):

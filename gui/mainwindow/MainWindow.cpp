@@ -352,7 +352,8 @@ void MainWindow::setupToolBar() {
     auto* proto_off   = proto_menu->addAction("Off");
     auto* proto_uart  = proto_menu->addAction("UART");
     auto* proto_i2c   = proto_menu->addAction("I2C");
-    for (auto* a : {proto_off, proto_uart, proto_i2c}) {
+    auto* proto_can   = proto_menu->addAction("CAN");
+    for (auto* a : {proto_off, proto_uart, proto_i2c, proto_can}) {
         a->setCheckable(true);
         proto_group->addAction(a);
     }
@@ -365,6 +366,7 @@ void MainWindow::setupToolBar() {
     connect(proto_off,  &QAction::triggered, this, [selectProtocol]{ selectProtocol({}); });
     connect(proto_uart, &QAction::triggered, this, [selectProtocol]{ selectProtocol("UART"); });
     connect(proto_i2c,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("I2C"); });
+    connect(proto_can,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("CAN"); });
     connect(proto_btn, &QPushButton::clicked, proto_btn, [proto_menu, proto_btn]() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });

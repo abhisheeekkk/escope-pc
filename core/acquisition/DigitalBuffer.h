@@ -63,6 +63,12 @@ public:
     /// needed on screen.
     void trim_before(double cutoff_ns);
 
+    /// Record that a capture burst ended at @p timestamp_ns (the sampler is stopped
+    /// until the next burst, so nothing after this is observed). Decoders use it to
+    /// tell a frame cut off by the end of a burst from a genuinely broken one.
+    void mark_burst_end(double timestamp_ns);
+    std::vector<double> burst_ends() const;
+
     /// Reconstruct the logic level on @p channel at time @p timestamp_ns.
     /// Returns false if no edges before the timestamp (assumes initial low).
     bool level_at(uint8_t channel, double timestamp_ns) const;
@@ -98,6 +104,7 @@ public:
 private:
     uint8_t                              num_channels_;
     std::vector<std::vector<DigitalEdge>> edges_;  ///< Per-channel edge lists
+    std::vector<double>                  burst_ends_;
     mutable std::mutex                   mutex_;
 };
 

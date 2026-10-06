@@ -39,6 +39,16 @@ void DigitalBuffer::push_batch(const DigitalEdge* edges, std::size_t count) {
     for (auto& ch : edges_) cap_channel(ch);
 }
 
+void DigitalBuffer::mark_burst_end(double timestamp_ns) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    burst_ends_.push_back(timestamp_ns);
+}
+
+std::vector<double> DigitalBuffer::burst_ends() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return burst_ends_;
+}
+
 bool DigitalBuffer::level_at(uint8_t channel, double timestamp_ns) const {
     if (channel >= num_channels_) return false;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -109,6 +119,8 @@ void DigitalBuffer::trim_before(double cutoff_ns) {
         if (cut != ch.begin())
             ch.erase(ch.begin(), cut);
     }
+    burst_ends_.erase(burst_ends_.begin(),
+        std::lower_bound(burst_ends_.begin(), burst_ends_.end(), cutoff_ns));
 }
 
 std::size_t DigitalBuffer::total_edges() const {
@@ -127,6 +139,7 @@ std::size_t DigitalBuffer::edge_count(uint8_t channel) const {
 void DigitalBuffer::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& ch : edges_) ch.clear();
+    burst_ends_.clear();
 }
 
 std::pair<double, double> DigitalBuffer::time_range_ns() const {

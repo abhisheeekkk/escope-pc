@@ -61,6 +61,7 @@ void paintAnnotationLane(QPainter& p, const std::vector<escope::AnnotationItem>&
 
         switch (it.kind) {
             case K::Address: fill = QColor(37, 99, 235, 215);  break;
+            case K::Field:   fill = it.error ? QColor(214, 140, 30, 230) : QColor(100, 116, 139, 215); break;
             case K::Data:    fill = QColor(13, 148, 136, 215); break;
             case K::Error:   fill = QColor(220, 38, 38, 230);  break;
             case K::Group:   fill = it.error ? QColor(185, 60, 60, 220) : QColor(71, 85, 105, 225); break;

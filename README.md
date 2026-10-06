@@ -12,7 +12,7 @@ EmbeddedScope is a PC application that combines:
 
 - **Analog oscilloscope** — 2 channels, GPU-accelerated waveform rendering
 - **Logic analyzer** — 8 digital channels, edge-list storage (efficient for long captures)
-- **Protocol decoder** — UART and I2C (working), SPI/CAN (Phase 3)
+- **Protocol decoder** — UART, I2C and CAN (working), SPI (Phase 3)
 - **Unified timeline** — all signals on one shared nanosecond time base
 - **Simulated source** — full GUI development without any hardware
 - **eScope hardware source** — 8ch @ 48 MS/s triggered captures over USB CDC-ACM (`/dev/ttyACM*`), STM32-based
@@ -124,8 +124,10 @@ cd build && ctest --output-on-failure
 ### Phase 3 — Protocol engine
 - [ ] SPI decoder
 - [x] I2C decoder (START/STOP/repeated START, address + R/W, ACK/NACK, glitch filter)
-- [ ] CAN decoder
-- [ ] Unified protocol timeline rendering
+- [x] CAN 2.0A/B decoder (bit rate auto-detect, bit stuffing, CRC-15 check, ACK, error detection, DroneCAN identifier and multi-frame transfer details)
+- [x] On-screen protocol annotations for UART, I2C and CAN (zoom-aware layout, tooltips)
+- [ ] CAN FD decoder (frames are detected and flagged, not decoded)
+- [ ] Protocol timeline: one combined view for all decoders
 - [ ] Protocol search / filter
 
 ### Phase 4 — Correlation
@@ -190,13 +192,18 @@ session's trigger setting to it whenever it changes and on every Run: an edge
 
 After choosing a protocol and its pins in the Protocol menu, the decoded data is
 drawn on the main view itself, on a lane under the channel (SDA for I2C, TX and RX
-for UART), and the pins' channels are shown automatically:
+for UART or CAN), and the pins' channels are shown automatically:
 
 - **I2C:** `S` (green) for START, `Sr` (orange) for repeated START, `P` (red) for
   STOP, a blue box for the address with its R/W (`3C W`), a teal box per data byte
   in hex, and a small `A` (green) or `N` (red, with a red outline) for ACK or NACK
   at the end of each byte. `~` marks a capture that began mid-transfer; a red box
   with `!` is a decode error.
+- **CAN:** a green `SOF`, a blue box with the identifier (`0x123`, or the 29-bit
+  `0x1801550A`), `DLC n`, a teal box per data byte, the CRC with its check result,
+  the ACK slot (an orange box when no node acknowledged) and a red `EOF`. Stuff
+  errors, bad CRC and cut-off frames are marked. A byte box includes any stuff bits
+  inside it, so boxes can be one bit wider than eight.
 - **UART:** a box per frame with the hex value, and the character when there is
   room (`LF`, `CR` for line ends).
 - **It follows the zoom.** Zoomed in, every byte is its own box. As you zoom out a
@@ -241,11 +248,11 @@ PNGs without the OpenGL window:
 
 ## Protocol decoder panel
 
-- **Enable** — toolbar "Protocol" menu: UART, I2C or Off. The Protocol dock
+- **Enable** — toolbar "Protocol" menu: UART, I2C, CAN or Off. The Protocol dock
   appears/disappears with that menu; it has no float, close or minimize
   buttons and sits in the right-hand column. Resize it by dragging its edge.
 - **Pins** — no pins are assigned by default. Pick them yourself: TX/RX for
-  UART, SDA/SCL for I2C (a pin can't be used for both roles).
+  UART, SDA/SCL for I2C, CAN TX/RX for CAN (a pin can't be used for both roles).
 - **UART** — baud rate is auto-detected per line; decoded text shows the whole
   capture.
   Each capture burst is decoded on its own: a burst usually begins and ends
@@ -259,12 +266,42 @@ PNGs without the OpenGL window:
   The log keeps the newest 5000 lines and doesn't wrap: one transaction per
   line, scroll sideways for long ones. Below it is a list of the frames in the
   visible window (`46.153113 s  0x45 ACK`).
+- **CAN** — pick the channel on the transceiver's RXD (what is on the bus) and/or
+  TXD (what this node drives); each pin is decoded on its own and tagged TX or RX in
+  the log. Probe 3.3 V logic, never CANH/CANL. The bit rate is detected
+  automatically (standard rates, 10 kbit/s to 1 Mbit/s). The log has one line per
+  frame: `<time>  RX  IDE 0x104EE814  DLC 8 4B 28 FF 05 02 3C 3A 8B  CRC 0x5D12 OK  ACK`.
+  A TX pin always reads `NO ACK` because TXD does not show the acknowledge from other
+  nodes; use RX for that.
 - **Timing** — on the waveform each I2C byte box runs from the SCL falling edge
   before its first bit to the SCL falling edge after its ACK clock, so boxes
   meet exactly and the ACK clock is inside; bits are still sampled on rising SCL.
 - **Clear / Copy** — Clear hides everything decoded so far; Copy puts the whole
   log on the clipboard. The log is never cleared by docking/layout changes,
   only by switching protocol or pressing Clear.
+
+## CAN decoder
+
+Classic CAN 2.0A/B on one logic line (`core/decoders/can/`).
+
+- **Frames:** SOF, 11 or 29 bit identifier, RTR, DLC, data, CRC-15 (checked), ACK,
+  EOF. Bit stuffing is removed before decoding and a violation is reported.
+- **Timing:** synchronises on the SOF edge, re-synchronises on every edge, samples at
+  80 % of the bit time, ignores pulses shorter than a quarter bit (ringing), and
+  detects the bit rate from the pulse widths. If the estimate decodes nothing it
+  tries the other standard rates.
+- **Errors:** stuff error, bad CRC, no ACK, form error, and frames cut off by the end
+  of a capture burst (`[INCOMPLETE]`). A node signalling an error appears as a stuff
+  error, because an error flag is six dominant bits.
+- **DroneCAN:** for 29-bit identifiers the tooltip shows priority, message type and
+  source node, anonymous messages and node ID allocation, NodeStatus fields, the tail
+  byte (start, end, toggle, transfer id), and multi-frame transfers reassembled. The
+  decoder itself stays protocol generic; the DroneCAN text is extra detail only.
+- **Not covered:** CAN FD frames (detected, flagged, skipped), multi-frame transfer
+  CRC verification (needs the message signature), higher layers other than DroneCAN.
+
+The decoder is tested against an independent frame encoder (stuffing, CRC computed
+two ways) and against frames captured from a real DroneCAN sensor.
 
 ---
 
@@ -286,3 +323,4 @@ PNGs without the OpenGL window:
 - `core/` must remain Qt-free
 - New protocol decoders: implement `IDecoder`, use `REGISTER_DECODER` macro
 - New hardware sources: implement `IDataSource`
+

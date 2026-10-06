@@ -47,12 +47,19 @@ AnnotationItem make_annotation_item(const DecodedEvent& e, std::size_t index) {
     it.detail   = e.detail.empty() ? e.label : e.detail;
 
     if (e.type == T::Control) {
-        if      (e.label == "START") { it.kind = Kind::Start;    it.text = "S";  it.detail = "START condition"; }
+        if      (e.label == "SOF")   { it.kind = Kind::Start;    it.text = "SOF"; it.detail = "CAN start of frame"; }
+        else if (e.label == "EOF")   { it.kind = Kind::Stop;     it.text = "EOF"; it.detail = "CAN end of frame"; }
+        else if (e.label == "START") { it.kind = Kind::Start;    it.text = "S";  it.detail = "START condition"; }
         else if (e.label == "Sr")    { it.kind = Kind::Repeated; it.text = "Sr"; it.detail = "Repeated START"; }
         else if (e.label == "STOP")  { it.kind = Kind::Stop;     it.text = "P";  it.detail = "STOP condition"; }
         else                         { it.kind = Kind::Marker;   it.text = e.label;
                                        it.detail = e.detail.empty() ? "Capture began mid-transfer" : e.detail; }
         it.end_ns = it.start_ns;
+        return it;
+    }
+    if (e.type == T::Annotation) {                       // CAN: DLC, CRC, ACK
+        it.kind = Kind::Field;
+        it.text = e.label;
         return it;
     }
     if (e.type == T::Error || e.is_error) {
@@ -64,6 +71,10 @@ AnnotationItem make_annotation_item(const DecodedEvent& e, std::size_t index) {
     it.ack = ack_of(e.label);
     if (e.type == T::Address) {
         it.kind = Kind::Address;
+        if (e.label.compare(0, 2, "ID") == 0) {          // CAN: show the identifier
+            it.text = e.label.substr(e.label.find(' ') + 1);
+            return it;
+        }
         it.text = hex2(e.value >> 1) + ((e.value & 1) ? " R" : " W");
         it.detail += it.ack == 1 ? "  (ACK)" : it.ack == 0 ? "  (NACK)" : "";
         return it;

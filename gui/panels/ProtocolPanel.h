@@ -20,7 +20,7 @@ class ProtocolPanel : public QWidget {
 public:
     explicit ProtocolPanel(QWidget* parent = nullptr);
 
-    /// Select the active protocol ("UART" or "I2C"), or an empty string for off.
+    /// Select the active protocol ("UART", "I2C" or "CAN"), or an empty string for off.
     void setProtocol(const QString& name);
     bool active() const { return !protocol_.isEmpty(); }
 

@@ -289,6 +289,7 @@ void StmDataSource::reader_loop(CaptureSession* session)
                 }
             }
             session->digital_buffer().push_batch(batch.data(), batch.size());
+            session->digital_buffer().mark_burst_end(burst_t0_ns + double(nsamp) * ns_per_sample);
 
             buf.erase(buf.begin(), buf.begin() + frame_len);
 

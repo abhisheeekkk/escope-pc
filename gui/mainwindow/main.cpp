@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
     dark.setColor(QPalette::WindowText,      Qt::white);
     dark.setColor(QPalette::Base,            QColor(20, 20, 20));
     dark.setColor(QPalette::AlternateBase,   QColor(45, 45, 45));
-    dark.setColor(QPalette::ToolTipBase,     Qt::white);
+    dark.setColor(QPalette::ToolTipBase,     QColor(45, 45, 50));
     dark.setColor(QPalette::ToolTipText,     Qt::white);
     dark.setColor(QPalette::Text,            Qt::white);
     dark.setColor(QPalette::Button,          QColor(53, 53, 53));
@@ -35,6 +35,7 @@ int main(int argc, char* argv[]) {
     dark.setColor(QPalette::Highlight,       QColor(42, 130, 218));
     dark.setColor(QPalette::HighlightedText, Qt::black);
     app.setPalette(dark);
+    app.setStyleSheet("QToolTip { color:#eee; background:#2d2d32; border:1px solid #666; padding:3px; }");
 
     MainWindow w;
     w.show();

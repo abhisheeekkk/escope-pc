@@ -19,7 +19,7 @@ namespace escope {
 struct AnnotationItem {
     enum class Kind : uint8_t {
         Start, Repeated, Stop, Marker,      // zero-width markers: S, Sr, P, ~
-        Address, Data, Error,               // one frame
+        Address, Data, Error, Field,             // one frame
         Group,                              // a whole transfer, zoomed out
         Dense,                              // several items merged, far zoomed out
     };
