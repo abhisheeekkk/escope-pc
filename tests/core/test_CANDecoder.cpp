@@ -216,8 +216,8 @@ TEST(CANDecoder, DroneCanNodeStatusAndAllocationReply) {
     EXPECT_NE(all.find("node ID granted: 20"), std::string::npos);
 }
 
-TEST(CANDecoder, ReassemblesRealArkFlowMeasurement) {
-    // The four frames of one transfer captured from a real ARK Flow (node 20, type 20200)
+TEST(CANDecoder, ReassemblesRealMultiFrameTransfer) {
+    // The four frames of one transfer captured from a real DroneCAN device (node 20, message type 20200)
     const uint32_t id = 0x104EE814;
     Bus b; b.idle();
     b.bits(encode({id, true, false, {0x9C, 0x22, 0x0A, 0xD7, 0xA3, 0x3C, 0xFF, 0x9C}})); b.idle(4);
@@ -228,7 +228,8 @@ TEST(CANDecoder, ReassemblesRealArkFlowMeasurement) {
     auto ev = d.decode(b.buf, {{"RX", 0}});
     std::string all;
     for (auto& e : ev) all += e.detail + "\n";
-    EXPECT_NE(all.find("integration 20.0 ms"), std::string::npos) << all;
-    EXPECT_NE(all.find("quality 94"), std::string::npos);
+    // 21 payload bytes: the 2 byte transfer CRC is dropped, the tail bytes are dropped
+    EXPECT_NE(all.find("Payload 21 bytes 0A D7 A3 3C FF 3E 8B B8 FE 9B F4 B8 19 B8 0B 3B 75 ED 4C 2F 5E"),
+              std::string::npos) << all;
     EXPECT_NE(all.find("Multi-frame transfer (4 frames)"), std::string::npos);
 }

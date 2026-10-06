@@ -217,27 +217,11 @@ DecodedEvent make(double t0, double t1, DecodedEvent::Type type, std::string lab
 // ID box.
 namespace {
 
-float f32le(const std::vector<uint8_t>& d, std::size_t o) {
-    uint32_t u = d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (uint32_t(d[o + 3]) << 24);
-    float f;
-    std::memcpy(&f, &u, 4);
-    return f;
-}
-
-std::string describe_payload(unsigned type, const std::vector<uint8_t>& p) {
-    char b[300];
-    if (type == 20200 && p.size() == 21) {
-        // com.hex.equipment.flow.Measurement (ARK Flow): float32 integration interval [s],
-        // float32[2] gyro integral [rad], float32[2] flow integral [rad], uint8 quality
-        std::snprintf(b, sizeof b,
-            "Optical flow measurement: integration %.1f ms, gyro integral (%.3g, %.3g) rad, "
-            "flow integral (%.3g, %.3g) rad, quality %u",
-            f32le(p, 0) * 1000.0, f32le(p, 4), f32le(p, 8), f32le(p, 12), f32le(p, 16), p[20]);
-        return b;
-    }
+std::string describe_payload(const std::vector<uint8_t>& p) {
+    char b[32];
     std::snprintf(b, sizeof b, "Payload %zu bytes", p.size());
     std::string s = b;
-    for (std::size_t i = 0; i < p.size() && i < 24; ++i) { std::snprintf(b, sizeof b, " %02X", p[i]); s += b; }
+    for (std::size_t i = 0; i < p.size() && i < 64; ++i) { std::snprintf(b, sizeof b, " %02X", p[i]); s += b; }
     return s;
 }
 
@@ -272,7 +256,7 @@ void annotate_transfers(std::vector<DecodedEvent>& ev) {
             if (end) {
                 if (t.bytes.size() > 2) {
                     std::vector<uint8_t> payload(t.bytes.begin() + 2, t.bytes.end());
-                    const std::string text = describe_payload((f.id >> 8) & 0xFFFF, payload);
+                    const std::string text = describe_payload(payload);
                     char hdr[80];
                     std::snprintf(hdr, sizeof hdr, "\nMulti-frame transfer (%zu frames). ", t.id_events.size());
                     for (std::size_t k : t.id_events) ev[k].detail += std::string(hdr) + text;
