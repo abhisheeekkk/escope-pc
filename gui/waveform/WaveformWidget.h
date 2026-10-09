@@ -110,6 +110,11 @@ public:
     void clearAnnotations();
     bool hasAnnotations(int channel) const;
 
+    /// Bring [t0, t1] into view (centred, zoomed only when it would not fit or is tiny) and mark it
+    /// with a band, so a frame picked in the protocol list is easy to find.
+    void revealRange(double t0_ns, double t1_ns);
+    void clearHighlight();
+
 signals:
     void cursorsChanged();
     void timeDivChanged(double ns);
@@ -186,6 +191,12 @@ private:
     // Animated view changes
     QVariantAnimation* view_anim_ = nullptr;
     double anim_from_tdiv_ = 0, anim_from_off_ = 0, anim_to_tdiv_ = 0, anim_to_off_ = 0;
+
+    double hl_t0_ = 0, hl_t1_ = 0;
+    bool   hl_on_ = false;
+    double hl_alpha_ = 0.0;
+    QVariantAnimation* hl_anim_ = nullptr;
+    void fadeHighlight(double to);
 
     // Flick-to-pan: the last few pointer samples of a drag give its release velocity
     struct DragSample { qint64 ms; int x; };

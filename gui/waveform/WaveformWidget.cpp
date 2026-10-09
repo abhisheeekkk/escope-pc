@@ -445,6 +445,18 @@ void WaveformWidget::drawOverlay() {
 
     if (!session_) return;
 
+    if (hl_on_) {                                           // the frame picked in the protocol list
+        const float x0 = timeToPixel(hl_t0_), x1 = std::max(timeToPixel(hl_t1_), x0 + 2.0f);
+        if (x1 > 0 && x0 < W) {
+            QColor f = theme::kAccent; f.setAlpha(int(38 * hl_alpha_));
+            QColor e = theme::kAccent; e.setAlpha(int(150 * hl_alpha_));
+            p.fillRect(QRectF(x0, 0, x1 - x0, H - 26), f);
+            p.setPen(QPen(e, 1));
+            p.drawLine(QPointF(x0, 0), QPointF(x0, H - 26));
+            p.drawLine(QPointF(x1, 0), QPointF(x1, H - 26));
+        }
+    }
+
     // Friendly empty state until the first capture arrives
     if (session_->digital_buffer().total_edges() == 0) {
         p.setPen(theme::kText);
@@ -1123,6 +1135,37 @@ bool WaveformWidget::snapToSignal() {
     update();
     return true;
 }
+
+void WaveformWidget::revealRange(double t0, double t1) {
+    if (t1 < t0) std::swap(t0, t1);
+    follow_latest_ = false;
+    hl_t0_ = t0; hl_t1_ = t1; hl_on_ = true;
+    fadeHighlight(1.0);
+    const double span = std::max(t1 - t0, 1.0);
+    double tdiv = time_per_div_ns_;
+    const double view = tdiv * HDIVS;
+    if (span > view * 0.6)       tdiv = span / (HDIVS * 0.5);          // too wide: let it fill half the screen
+    else if (span < view * 0.02) tdiv = span * 20.0 / HDIVS;           // a speck: zoom in so it can be seen
+    const double mid = (t0 + t1) / 2.0;
+    animateView(tdiv, mid - tdiv * HDIVS / 2.0, 320, QEasingCurve::InOutCubic);
+    update();
+}
+
+void WaveformWidget::fadeHighlight(double to) {
+    if (!hl_anim_) {
+        hl_anim_ = new QVariantAnimation(this);
+        hl_anim_->setEasingCurve(QEasingCurve::OutCubic);
+        connect(hl_anim_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) { hl_alpha_ = v.toDouble(); update(); });
+        connect(hl_anim_, &QVariantAnimation::finished, this, [this] { if (hl_alpha_ <= 0.001) hl_on_ = false; });
+    }
+    hl_anim_->stop();
+    hl_anim_->setDuration(to > hl_alpha_ ? 220 : 180);
+    hl_anim_->setStartValue(hl_alpha_);
+    hl_anim_->setEndValue(to);
+    hl_anim_->start();
+}
+
+void WaveformWidget::clearHighlight() { if (hl_on_) fadeHighlight(0.0); }
 
 void WaveformWidget::jumpToEdge(bool forward) {
     if (!session_) return;

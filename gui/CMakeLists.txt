@@ -11,6 +11,8 @@ qt_add_executable(embeddedscope
     waveform/AnnotationPainter.h
     panels/ChannelPanel.cpp
     panels/ChannelPanel.h
+    panels/FrameListWidget.cpp
+    panels/FrameListWidget.h
     panels/ProtocolPanel.cpp
     panels/ProtocolPanel.h
     resources/fonts.qrc

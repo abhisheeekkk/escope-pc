@@ -10,6 +10,7 @@
 namespace escope { class CaptureSession; }
 class QComboBox;
 class QPlainTextEdit;
+class FrameListWidget;
 class QLabel;
 class QFormLayout;
 
@@ -38,6 +39,10 @@ public:
     void setLive(bool live) { live_ = live; }
 
 signals:
+    /// A frame was picked in the list: bring [start_ns, end_ns] into view.
+    void frameActivated(double start_ns, double end_ns);
+    /// The picked frame was deselected (search cleared, Esc): remove its marker.
+    void frameDeselected();
     /// The full decoded stream for one channel (sorted by time), for the waveform
     /// to draw as S / P / hex / A / N annotations under that channel.
     void annotationsChanged(int channel,
@@ -78,5 +83,5 @@ private:
     QLabel*         baud_    = nullptr;
     QLabel*         summary_ = nullptr;
     QPlainTextEdit* text_    = nullptr;   ///< full decoded byte stream as text
-    QPlainTextEdit* output_  = nullptr;
+    FrameListWidget* frames_ = nullptr;   ///< searchable list of every decoded frame
 };

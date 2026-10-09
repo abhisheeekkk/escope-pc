@@ -1,5 +1,6 @@
 #include "panels/ProtocolPanel.h"
 #include "theme/Theme.h"
+#include "panels/FrameListWidget.h"
 #include "session/CaptureSession.h"
 #include "decoders/uart/UartDecoder.h"
 #include "decoders/i2c/I2CDecoder.h"
@@ -91,11 +92,10 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     text_->setPlaceholderText("Decoded text (whole capture)");
     root->addWidget(text_, 1);
 
-    output_ = new QPlainTextEdit(this);
-    output_->setReadOnly(true);
-    output_->setFont(theme::mono(9.5));
-    output_->setLineWrapMode(QPlainTextEdit::NoWrap);
-    root->addWidget(output_, 1);
+    frames_ = new FrameListWidget(this);
+    root->addWidget(frames_, 2);
+    connect(frames_, &FrameListWidget::frameActivated, this, &ProtocolPanel::frameActivated);
+    connect(frames_, &FrameListWidget::selectionCleared, this, &ProtocolPanel::frameDeselected);
 
     setMinimumWidth(220);
 }
@@ -186,7 +186,7 @@ void ProtocolPanel::setProtocol(const QString& name) {
     baud_->setText(spi ? "SCK: --" : can ? "Bit rate: auto" : i2c ? "Speed: --" : "Baud: auto");
     text_->setPlaceholderText((i2c || can || spi) ? "Hex log (whole capture)" : "Decoded text (whole capture)");
     clear_before_ns_ = -1.0;
-    output_->clear();
+    frames_->clear();
     text_->clear();
     summary_->clear();
     emitRoles();
@@ -197,7 +197,7 @@ void ProtocolPanel::clearDecoded() {
     // real start bits), so "clear" = ignore frames up to the newest edge now.
     if (session_) clear_before_ns_ = session_->digital_buffer().time_range_ns().second;
     text_->clear();
-    output_->clear();
+    frames_->clear();
     summary_->clear();
 }
 
@@ -262,7 +262,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         if (clk < 0 || (mosi < 0 && miso < 0)) {
             summary_->setText("Select CLK and MOSI or MISO");
             baud_->setText("SCK: --");
-            output_->clear();
+            frames_->clear();
             text_->clear();
             dropAnnotations();
             return;
@@ -299,7 +299,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         if (!any) {
             summary_->setText("Select a CAN TX or RX pin");
             baud_->setText("Bit rate: auto");
-            output_->clear();
+            frames_->clear();
             text_->clear();
             dropAnnotations();
             return;
@@ -311,7 +311,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         if (sda < 0 || scl < 0) {
             summary_->setText("Select SDA and SCL pins");
             baud_->setText("Speed: --");
-            output_->clear();
+            frames_->clear();
             text_->clear();
             dropAnnotations();
             return;
@@ -344,7 +344,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         if (lines_to_decode.empty()) {
             summary_->setText("Select a TX or RX pin");
             baud_->setText("Baud: auto");
-            output_->clear();
+            frames_->clear();
             text_->clear();
             dropAnnotations();
             return;
@@ -530,24 +530,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         glitches = cache_glitches_;
     }
 
-    events.erase(std::remove_if(events.begin(), events.end(),
-        [&](const escope::DecodedEvent& e) {
-            return e.end_ns < view_t0_ns || e.start_ns > view_t1_ns;
-        }), events.end());
-    std::sort(events.begin(), events.end(),
-        [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
-
-    int errors = 0;
-    for (const auto& e : events) errors += e.is_error;
-    const std::size_t first = events.size() > MAX_LINES ? events.size() - MAX_LINES : 0;
-
-    QStringList text;
-    for (std::size_t i = first; i < events.size(); ++i)
-        text << QString("%1  %2").arg(formatTime(events[i].start_ns), 12)
-                                 .arg(QString::fromStdString(events[i].label));
-    output_->setPlainText(text.join('\n'));
-    output_->verticalScrollBar()->setValue(output_->verticalScrollBar()->maximum());
-    QString sum = QString("%1 frames, %2 errors").arg(events.size()).arg(errors);
-    if (i2c && glitches) sum += QString(", %1 glitches ignored").arg(glitches);
-    summary_->setText(sum);
+    // The list shows every frame of the capture, not just the visible window, so it can be searched
+    if (redecode) frames_->setEvents(std::make_shared<const std::vector<escope::DecodedEvent>>(events), live_);
+    summary_->setText(i2c && glitches ? QString("%1 glitches ignored").arg(glitches) : QString());
 }

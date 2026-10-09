@@ -61,6 +61,14 @@ QString stylesheet() {
         QPlainTextEdit { color:%1; background:%11; border:1px solid %6; border-radius:10px; padding:8px;
                          selection-background-color:%7; }
 
+        QTableView { color:%1; background:%11; border:1px solid %6; border-radius:10px; outline:0;
+                     selection-background-color:%7; selection-color:white; }
+        QTableView::item { padding:0 6px; border:none; }
+        QHeaderView { background:transparent; }
+        QHeaderView::section { color:%2; background:transparent; border:none; border-bottom:1px solid %6;
+                               padding:5px 6px; font-size:11px; }
+        QTableCornerButton::section { background:transparent; border:none; }
+
         QDockWidget { color:%2; }
         QDockWidget > QWidget { background:%3; }
         QMainWindow::separator { background:%6; width:1px; height:1px; }

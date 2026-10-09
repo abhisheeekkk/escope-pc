@@ -600,7 +600,11 @@ void MainWindow::setupDockWidgets() {
             waveform_widget_->setAnnotations(ch, std::move(ev));
         });
     connect(protocol_panel_, &ProtocolPanel::annotationsCleared, this,
-        [this]{ waveform_widget_->clearAnnotations(); });
+        [this]{ waveform_widget_->clearAnnotations(); waveform_widget_->clearHighlight(); });
+    connect(protocol_panel_, &ProtocolPanel::frameActivated, this,
+        [this](double t0, double t1) { waveform_widget_->revealRange(t0, t1); });
+    connect(protocol_panel_, &ProtocolPanel::frameDeselected, this,
+        [this] { waveform_widget_->clearHighlight(); });
     connect(protocol_panel_, &ProtocolPanel::pinRolesChanged, channel_panel_, &ChannelPanel::setRoles);
     connect(protocol_panel_, &ProtocolPanel::pinsChanged, this,
         [this](QVector<int> chans) {
