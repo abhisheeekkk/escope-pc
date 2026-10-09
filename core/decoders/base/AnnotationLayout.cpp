@@ -49,6 +49,8 @@ AnnotationItem make_annotation_item(const DecodedEvent& e, std::size_t index) {
     if (e.type == T::Control) {
         if      (e.label == "SOF")   { it.kind = Kind::Start;    it.text = "SOF"; it.detail = "CAN start of frame"; }
         else if (e.label == "EOF")   { it.kind = Kind::Stop;     it.text = "EOF"; it.detail = "CAN end of frame"; }
+        else if (e.label == "CS")    { it.kind = Kind::Start;    it.text = "CS";  it.detail = "Chip select asserted"; }
+        else if (e.label == "/CS")   { it.kind = Kind::Stop;     it.text = "/CS"; it.detail = "Chip select released"; }
         else if (e.label == "START") { it.kind = Kind::Start;    it.text = "S";  it.detail = "START condition"; }
         else if (e.label == "Sr")    { it.kind = Kind::Repeated; it.text = "Sr"; it.detail = "Repeated START"; }
         else if (e.label == "STOP")  { it.kind = Kind::Stop;     it.text = "P";  it.detail = "STOP condition"; }
@@ -73,6 +75,10 @@ AnnotationItem make_annotation_item(const DecodedEvent& e, std::size_t index) {
         it.kind = Kind::Address;
         if (e.label.compare(0, 2, "ID") == 0) {          // CAN: show the identifier
             it.text = e.label.substr(e.label.find(' ') + 1);
+            return it;
+        }
+        if (e.label.compare(0, 4, "CMD ") == 0) {        // SPI display command
+            it.text = "CMD " + e.label.substr(e.label.find("0x") + 2);
             return it;
         }
         it.text = hex2(e.value >> 1) + ((e.value & 1) ? " R" : " W");
@@ -105,15 +111,17 @@ void AnnotationIndex::build(std::shared_ptr<const std::vector<DecodedEvent>> eve
 
     bool open = false;
     Span cur{};
-    std::string addr_text;
+    std::string addr_text, start_text;
     auto close = [&](std::size_t last) {
         cur.last     = last;
         cur.end_ns   = ev[last].type == DecodedEvent::Type::Control && ev[last].label == "STOP"
                        ? ev[last].start_ns : ev[last].end_ns;
         char b[64];
         std::snprintf(b, sizeof b, " . %dB", cur.data_bytes);
-        cur.summary = (addr_text.empty() ? std::string("~") : addr_text) + b;
-        cur.detail  = "Transfer " + (addr_text.empty() ? std::string("(began mid-transfer)") : addr_text) +
+        const std::string none = start_text == "CS" ? "CS" : "~";       // no address: chip select window, or began mid-transfer
+        cur.summary = (addr_text.empty() ? none : addr_text) + b;
+        cur.detail  = "Transfer " + (addr_text.empty() ? (start_text == "CS" ? std::string("(chip-select window)")
+                                                                              : std::string("(began mid-transfer)")) : addr_text) +
                       ", " + std::to_string(cur.data_bytes) + " data bytes, " +
                       fmt_duration(cur.end_ns - cur.start_ns);
         spans_.push_back(cur);
@@ -130,6 +138,7 @@ void AnnotationIndex::build(std::shared_ptr<const std::vector<DecodedEvent>> eve
             cur.first = i;
             cur.start_ns = ev[i].start_ns;
             addr_text.clear();
+            start_text = it.text;
         } else if (k == Kind::Stop) {
             if (open) close(i); else loose_.push_back(i);
         } else if (open) {

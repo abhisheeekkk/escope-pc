@@ -3,6 +3,7 @@
 #include "decoders/uart/UartDecoder.h"
 #include "decoders/i2c/I2CDecoder.h"
 #include "decoders/can/CANDecoder.h"
+#include "decoders/spi/SPIDecoder.h"
 
 #include <QComboBox>
 #include <QFormLayout>
@@ -22,6 +23,7 @@
 namespace {
 constexpr int MAX_LINES = 500;
 constexpr int NUM_CH    = 8;
+constexpr double LIVE_WINDOW_NS = 2.0e9;   // decode this much recent data while the capture runs
 
 QString formatTime(double ns) {
     if (ns >= 1e9) return QString::number(ns / 1e9, 'f', 6) + " s";
@@ -56,29 +58,19 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     form->setContentsMargins(0, 0, 0, 0);
     tx_ = new QComboBox(this);
     rx_ = new QComboBox(this);
+    p3_ = new QComboBox(this);
     fillChannelCombo(tx_, 0);    // D0
     fillChannelCombo(rx_, -1);   // none
-    // A pin can only be TX or RX, never both: grey out the other combo's choice.
-    auto exclude = [](QComboBox* chosen, QComboBox* other) {
-        auto* model = qobject_cast<QStandardItemModel*>(other->model());
-        const int ch = chosen->currentData().toInt();
-        for (int i = 1; i < other->count(); ++i) {       // item 0 is "None"
-            auto* item = model->item(i);
-            const bool taken = other->itemData(i).toInt() == ch;
-            item->setFlags(taken ? item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable)
-                                 : item->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        }
-    };
-    connect(tx_, &QComboBox::currentIndexChanged, this, [=]{ exclude(tx_, rx_); });
-    connect(rx_, &QComboBox::currentIndexChanged, this, [=]{ exclude(rx_, tx_); });
+    fillChannelCombo(p3_, -1);
     // Changing a pin invalidates the annotations; show the chosen channels right away.
-    auto pinsMoved = [this]{ last_sig_.clear(); cache_valid_ = false; dropAnnotations(); emitPins(); };
-    connect(tx_, &QComboBox::currentIndexChanged, this, pinsMoved);
-    connect(rx_, &QComboBox::currentIndexChanged, this, pinsMoved);
-    exclude(tx_, rx_);
-    exclude(rx_, tx_);
+    auto pinsMoved = [this]{ refreshExclusion(); last_sig_.clear(); cache_valid_ = false; dropAnnotations(); emitPins(); };
+    for (QComboBox* c : {tx_, rx_, p3_})
+        connect(c, &QComboBox::currentIndexChanged, this, pinsMoved);
+    refreshExclusion();
     form->addRow("TX pin:", tx_);
     form->addRow("RX pin:", rx_);
+    form->addRow("MISO pin:", p3_);
+    setPinRow(p3_, QString(), false);
     baud_ = new QLabel("Baud: auto", this);
     baud_->setStyleSheet("color:#aaa;");
     form->addRow(baud_);
@@ -110,10 +102,40 @@ void ProtocolPanel::fillChannelCombo(QComboBox* c, int select) {
     c->setCurrentIndex(select + 1);
 }
 
+std::vector<QComboBox*> ProtocolPanel::activePins() const {
+    if (protocol_ == "SPI") return {tx_, rx_, p3_};
+    return {tx_, rx_};
+}
+
+/// A pin can only have one role: grey out, in every other picker, the channels already chosen.
+void ProtocolPanel::refreshExclusion() {
+    const std::vector<QComboBox*> all = {tx_, rx_, p3_};
+    for (QComboBox* me : all) {
+        auto* model = qobject_cast<QStandardItemModel*>(me->model());
+        for (int i = 1; i < me->count(); ++i) {              // item 0 is "None"
+            bool taken = false;
+            for (QComboBox* other : all)
+                if (other != me && other->isVisibleTo(this) && other->currentData().toInt() == me->itemData(i).toInt())
+                    taken = true;
+            auto* item = model->item(i);
+            item->setFlags(taken ? item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                                 : item->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        }
+    }
+}
+
+void ProtocolPanel::setPinRow(QComboBox* c, const QString& label, bool visible) {
+    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(c))) {
+        if (!label.isEmpty()) l->setText(label);
+        l->setVisible(visible);
+    }
+    c->setVisible(visible);
+}
+
 void ProtocolPanel::emitPins() {
     if (protocol_.isEmpty()) return;
     QVector<int> chans;
-    for (const QComboBox* c : {tx_, rx_}) {
+    for (const QComboBox* c : activePins()) {
         const int ch = c->currentData().toInt();
         if (ch >= 0) chans << ch;
     }
@@ -133,12 +155,15 @@ void ProtocolPanel::setProtocol(const QString& name) {
     // The two pin pickers double as TX/RX (UART) and SDA/SCL (I2C).
     const bool i2c = (name == "I2C");
     const bool can = (name == "CAN");
-    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(tx_))) l->setText(i2c ? "SDA pin:" : can ? "CAN TX pin:" : "TX pin:");
-    if (auto* l = qobject_cast<QLabel*>(form_->labelForField(rx_))) l->setText(i2c ? "SCL pin:" : can ? "CAN RX pin:" : "RX pin:");
+    const bool spi = (name == "SPI");
+    setPinRow(tx_, spi ? "CLK pin:"  : i2c ? "SDA pin:" : can ? "CAN TX pin:" : "TX pin:", true);
+    setPinRow(rx_, spi ? "MOSI pin:" : i2c ? "SCL pin:" : can ? "CAN RX pin:" : "RX pin:", true);
+    setPinRow(p3_, "MISO pin:", spi);
     // Pins are left for the user to choose; start from None on every protocol switch.
-    tx_->setCurrentIndex(0);
-    rx_->setCurrentIndex(0);
-    text_->setPlaceholderText((i2c || can) ? "Hex log (whole capture)" : "Decoded text (whole capture)");
+    for (QComboBox* c : {tx_, rx_, p3_}) c->setCurrentIndex(0);
+    refreshExclusion();
+    baud_->setText(spi ? "SCK: --" : can ? "Bit rate: auto" : i2c ? "Speed: --" : "Baud: auto");
+    text_->setPlaceholderText((i2c || can || spi) ? "Hex log (whole capture)" : "Decoded text (whole capture)");
     clear_before_ns_ = -1.0;
     output_->clear();
     text_->clear();
@@ -167,10 +192,12 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
     // changed (paused, or between bursts) there is nothing to do.
     bool redecode;
     {
-        std::vector<double> sig = {static_cast<double>(tx_->currentIndex()),
-                                   static_cast<double>(rx_->currentIndex()),
-                                   clear_before_ns_, buf.time_range_ns().second};
-        for (const QComboBox* c : {tx_, rx_}) {
+        std::vector<double> sig;
+        for (const QComboBox* c : activePins()) sig.push_back(static_cast<double>(c->currentIndex()));
+        sig.push_back(clear_before_ns_);
+        sig.push_back(live_ ? 1.0 : 0.0);
+        sig.push_back(buf.time_range_ns().second);
+        for (const QComboBox* c : activePins()) {
             const int ch = c->currentData().toInt();
             if (ch >= 0) sig.push_back(static_cast<double>(buf.edge_count(static_cast<uint8_t>(ch))));
         }
@@ -186,10 +213,52 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
     std::vector<escope::DecodedEvent> events;
     const bool i2c = (protocol_ == "I2C");
     const bool can = (protocol_ == "CAN");
+    const bool spi = (protocol_ == "SPI");
     std::size_t glitches = 0;      // short pulses the decoder ignored (I2C)
 
     if (redecode) {
-    if (can) {
+    // While the capture runs, decode only the newest bursts: decoding the whole (huge) history
+    // on every refresh takes longer than the bursts arrive and the screen would stall.
+    const escope::DigitalBuffer* src = &buf;
+    std::unique_ptr<escope::DigitalBuffer> window;
+    if (live_) {
+        const double t_end = buf.time_range_ns().second;
+        auto edges = buf.edges_in_range(t_end - LIVE_WINDOW_NS, t_end + 1.0);
+        auto first = std::find_if(edges.begin(), edges.end(),
+                                  [](const escope::DigitalEdge& e) { return e.snapshot; });
+        if (first != edges.end()) {                    // start at a burst boundary
+            window = std::make_unique<escope::DigitalBuffer>(static_cast<uint8_t>(NUM_CH));
+            window->push_batch(&*first, static_cast<std::size_t>(edges.end() - first));
+            for (double t : buf.burst_ends())
+                if (t >= first->timestamp_ns) window->mark_burst_end(t);
+            src = window.get();
+        }
+    }
+    if (spi) {
+        const int clk = tx_->currentData().toInt(), mosi = rx_->currentData().toInt(),
+                  miso = p3_->currentData().toInt();
+        if (clk < 0 || (mosi < 0 && miso < 0)) {
+            summary_->setText("Select CLK and MOSI or MISO");
+            baud_->setText("SCK: --");
+            output_->clear();
+            text_->clear();
+            dropAnnotations();
+            return;
+        }
+        std::vector<escope::DecoderChannelMap> map = {{"CLK", static_cast<uint8_t>(clk)}};
+        if (mosi >= 0) map.push_back({"MOSI", static_cast<uint8_t>(mosi)});
+        if (miso >= 0) map.push_back({"MISO", static_cast<uint8_t>(miso)});
+        escope::SPIDecoder dec;
+        events = dec.decode(*src, map);
+        if (dec.clock_hz() > 0) {
+            const double hz = dec.clock_hz();
+            baud_->setText(QString("SCK ~%1, mode %2%3")
+                .arg(hz >= 1e6 ? QString::number(hz / 1e6, 'f', 2) + " MHz" : QString::number(hz / 1e3, 'f', 1) + " kHz")
+                .arg(dec.mode_used()).arg(dec.mode_assumed() ? " (assumed)" : ""));
+        } else {
+            baud_->setText("SCK: no clock");
+        }
+    } else if (can) {
         // TX = what this node drives, RX = what it sees; each is decoded on its own.
         const struct { const QComboBox* box; const char* role; } lines[] = {{tx_, "TX"}, {rx_, "RX"}};
         QStringList rate_text;
@@ -199,7 +268,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
             if (line < 0) continue;
             any = true;
             escope::CANDecoder dec;
-            auto ev = dec.decode(buf, {{"RX", static_cast<uint8_t>(line)}});
+            auto ev = dec.decode(*src, {{"RX", static_cast<uint8_t>(line)}});
             rate_text << (dec.bitrate_used()
                 ? QString("%1: %2 kbit/s").arg(l.role).arg(dec.bitrate_used() / 1000.0, 0, 'f', 1)
                 : QString("%1: no signal").arg(l.role));
@@ -227,7 +296,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         }
         escope::I2CDecoder dec;
         // Decode the full history; only the visible window is listed below.
-        events = dec.decode(buf, {{"SCL", static_cast<uint8_t>(scl)},
+        events = dec.decode(*src, {{"SCL", static_cast<uint8_t>(scl)},
                                   {"SDA", static_cast<uint8_t>(sda)}});
         glitches = dec.glitches_filtered();
 
@@ -262,7 +331,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
         QStringList baud_text;
         // TX and RX are detected separately so they don't need to match.
         for (const auto& l : lines_to_decode) {
-            const uint32_t baud = escope::UartDecoder::detect_baud(buf, static_cast<uint8_t>(l.ch));
+            const uint32_t baud = escope::UartDecoder::detect_baud(*src, static_cast<uint8_t>(l.ch));
             if (!baud) { baud_text << QString("%1: no signal").arg(l.role); continue; }
             baud_text << QString("%1: %2").arg(l.role).arg(baud);
 
@@ -270,7 +339,7 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
             dec.configure({{"baud", std::to_string(baud)}});
             // Decode the full history so framing stays locked to real start bits;
             // only the visible window is listed below.
-            auto ev = dec.decode(buf, {{l.role, static_cast<uint8_t>(l.ch)}});
+            auto ev = dec.decode(*src, {{l.role, static_cast<uint8_t>(l.ch)}});
             events.insert(events.end(), ev.begin(), ev.end());
         }
         baud_->setText("Baud (auto): " + baud_text.join("   "));
@@ -282,7 +351,49 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
 
     // Rebuild the whole decoded stream as text, independent of the visible
     // window, so a long string isn't cut off by zoom/scroll. Per line (TX/RX).
-    if (can) {
+    if (spi) {
+        std::sort(events.begin(), events.end(),
+            [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
+        // One line per chip-select window (or per burst of clocks) and data line:
+        //   <time>  MOSI  [2A] 00 EF        [..] = command (DC low)     MISO  FF 00 00
+        // Words that were cut off show as !<label>.
+        const int mosi_ch = rx_->currentData().toInt();
+        std::vector<std::pair<double, QString>> timed;
+        std::map<int, std::pair<double, QString>> cur;           // channel -> start time, text
+        auto flush2 = [&](int ch) {
+            auto it = cur.find(ch);
+            if (it != cur.end() && !it->second.second.isEmpty()) timed.push_back(it->second);
+            cur.erase(ch);
+        };
+        std::map<int, double> last_end, last_dur;
+        for (const auto& e : events) {
+            using T = escope::DecodedEvent::Type;
+            const int ch = e.channel;
+            const QString lbl = QString::fromStdString(e.label);
+            const QString who = ch == mosi_ch ? "MOSI" : "MISO";
+            if (e.type == T::Control) {
+                flush2(ch);                                       // CS, /CS or ~: the next word starts a new line
+                continue;
+            }
+            // without chip select, a long pause between words starts a new line
+            if (cur.count(ch) && last_dur[ch] > 0 && e.start_ns - last_end[ch] > 4.0 * last_dur[ch]) flush2(ch);
+            auto& c = cur[ch];
+            if (c.second.isEmpty()) c = {e.start_ns, QString("%1  %2 ").arg(formatTime(e.start_ns), 12).arg(who)};
+            if (e.type == T::Address)    c.second += QString(" [%1]").arg(QString::number(e.value, 16).toUpper().rightJustified(2, '0'));
+            else if (e.type == T::Data)  c.second += " " + QString::number(e.value, 16).toUpper().rightJustified(2, '0');
+            else                         c.second += " !" + lbl;
+            last_end[ch] = e.end_ns;
+            last_dur[ch] = e.end_ns - e.start_ns;
+        }
+        for (auto it = cur.begin(); it != cur.end(); ) { const int ch = it->first; ++it; flush2(ch); }
+        std::stable_sort(timed.begin(), timed.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        QStringList lines;
+        for (const auto& t : timed) lines << t.second;
+        constexpr int MAX_LINES_LOG = 5000;
+        if (lines.size() > MAX_LINES_LOG) lines = lines.mid(lines.size() - MAX_LINES_LOG);
+        text_->setPlainText(lines.join('\n'));
+        text_->verticalScrollBar()->setValue(text_->verticalScrollBar()->maximum());
+    } else if (can) {
         std::sort(events.begin(), events.end(),
             [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
         // One line per frame and per pin:  <time> TX  ID 0x123  DLC 8  01 02 ...  CRC OK  ACK
@@ -377,10 +488,11 @@ void ProtocolPanel::updateFrom(const escope::CaptureSession& session,
     {
         std::sort(events.begin(), events.end(),
             [](const auto& a, const auto& b) { return a.start_ns < b.start_ns; });
-        for (const QComboBox* c : {tx_, rx_}) {
+        for (const QComboBox* c : activePins()) {
             const int ch = c->currentData().toInt();
             if (ch < 0) continue;
             if (i2c && c == rx_) continue;                 // I2C: the lane belongs to SDA
+            if (spi && c == tx_) continue;                 // SPI: lanes under MOSI and MISO, not the clock
             auto lane = std::make_shared<std::vector<escope::DecodedEvent>>();
             for (const auto& e : events)
                 if (e.channel == static_cast<uint8_t>(ch)) lane->push_back(e);

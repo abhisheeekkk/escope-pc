@@ -188,3 +188,14 @@ TEST(AnnotationLayout, CanFrameMapsToMarkersAndFields) {
     EXPECT_EQ(a.text, "0x123");
     EXPECT_EQ(make_annotation_item(dlc, 3).kind, AnnotationItem::Kind::Field);
 }
+
+TEST(AnnotationLayout, SpiEventsMapToMarkersCommandsAndData) {
+    DecodedEvent cs{}; cs.type = DecodedEvent::Type::Control; cs.label = "CS";
+    DecodedEvent rel = cs; rel.label = "/CS";
+    DecodedEvent cmd{}; cmd.type = DecodedEvent::Type::Address; cmd.label = "CMD 0x2A"; cmd.value = 0x2A;
+    EXPECT_EQ(make_annotation_item(cs, 0).kind, AnnotationItem::Kind::Start);
+    EXPECT_EQ(make_annotation_item(rel, 1).kind, AnnotationItem::Kind::Stop);
+    auto c = make_annotation_item(cmd, 2);
+    EXPECT_EQ(c.kind, AnnotationItem::Kind::Address);
+    EXPECT_EQ(c.text, "CMD 2A");
+}

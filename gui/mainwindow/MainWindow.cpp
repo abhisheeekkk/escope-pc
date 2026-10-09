@@ -353,7 +353,8 @@ void MainWindow::setupToolBar() {
     auto* proto_uart  = proto_menu->addAction("UART");
     auto* proto_i2c   = proto_menu->addAction("I2C");
     auto* proto_can   = proto_menu->addAction("CAN");
-    for (auto* a : {proto_off, proto_uart, proto_i2c, proto_can}) {
+    auto* proto_spi   = proto_menu->addAction("SPI");
+    for (auto* a : {proto_off, proto_uart, proto_i2c, proto_can, proto_spi}) {
         a->setCheckable(true);
         proto_group->addAction(a);
     }
@@ -367,6 +368,7 @@ void MainWindow::setupToolBar() {
     connect(proto_uart, &QAction::triggered, this, [selectProtocol]{ selectProtocol("UART"); });
     connect(proto_i2c,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("I2C"); });
     connect(proto_can,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("CAN"); });
+    connect(proto_spi,  &QAction::triggered, this, [selectProtocol]{ selectProtocol("SPI"); });
     connect(proto_btn, &QPushButton::clicked, proto_btn, [proto_menu, proto_btn]() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });
@@ -537,6 +539,7 @@ void MainWindow::onUpdateDisplay() {
     // Protocol decode is heavier: ~5 Hz (skipped when nothing changed)
     if (display_frame_ % 6 == 0) {
         const double t0 = waveform_widget_->timeOffset();
+        protocol_panel_->setLive(capturing_ && waveform_widget_->followLatest());
         protocol_panel_->updateFrom(*session_, t0,
             t0 + waveform_widget_->timePerDiv() * WaveformWidget::HDIVS);
     }

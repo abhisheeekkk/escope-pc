@@ -12,7 +12,7 @@ EmbeddedScope is a PC application that combines:
 
 - **Analog oscilloscope** — 2 channels, GPU-accelerated waveform rendering
 - **Logic analyzer** — 8 digital channels, edge-list storage (efficient for long captures)
-- **Protocol decoder** — UART, I2C and CAN (working), SPI (Phase 3)
+- **Protocol decoder** — UART, I2C, CAN and SPI (working)
 - **Unified timeline** — all signals on one shared nanosecond time base
 - **Simulated source** — full GUI development without any hardware
 - **eScope hardware source** — 8ch @ 48 MS/s triggered captures over USB CDC-ACM (`/dev/ttyACM*`), STM32-based
@@ -122,7 +122,7 @@ cd build && ctest --output-on-failure
 - [ ] Session load (deserializer)
 
 ### Phase 3 — Protocol engine
-- [ ] SPI decoder
+- [x] SPI decoder (CLK, MOSI, MISO; mode and clock rate detected; optional CS and DC lines in the decoder API)
 - [x] I2C decoder (START/STOP/repeated START, address + R/W, ACK/NACK, glitch filter)
 - [x] CAN 2.0A/B decoder (bit rate auto-detect, bit stuffing, CRC-15 check, ACK, error detection, DroneCAN identifier and multi-frame transfer details)
 - [x] On-screen protocol annotations for UART, I2C and CAN (zoom-aware layout, tooltips)
@@ -204,6 +204,10 @@ for UART or CAN), and the pins' channels are shown automatically:
   the ACK slot (an orange box when no node acknowledged) and a red `EOF`. Stuff
   errors, bad CRC and cut-off frames are marked. A byte box includes any stuff bits
   inside it, so boxes can be one bit wider than eight.
+- **SPI:** a lane under MOSI and under MISO with a teal box per word in hex. A word cut
+  off by the end of a burst is a red `!` box. (With chip-select and DC lines given to the
+  decoder API, windows get green `CS` and red `/CS` markers and command words a blue
+  `CMD 2A` box; the panel does not offer those two pins.)
 - **UART:** a box per frame with the hex value, and the character when there is
   room (`LF`, `CR` for line ends).
 - **It follows the zoom.** Zoomed in, every byte is its own box. As you zoom out a
@@ -211,9 +215,11 @@ for UART or CAN), and the pins' channels are shown automatically:
   with a summary (`3C W · 36B`), and when even those get closer than a couple of
   pixels they merge into a `xN` bar. Zoom back in and the detail returns. Hover a
   box for a tooltip (what it is, ACK or NACK, and its time).
-- It is live: the lane refreshes about five times a second as bursts arrive. The
-  decode only reruns when the data, the pins or Clear changed, so panning and
-  zooming while paused cost nothing.
+- It is live: the lane refreshes about five times a second as bursts arrive. While the
+  capture runs and the view follows the newest data, only the last 2 seconds are decoded, so
+  the decode keeps up with a busy bus (decoding a whole 10 minute SPI history takes seconds).
+  When you stop or pause, the whole history is decoded once. The decode only reruns when the
+  data, the pins or Clear changed, so panning and zooming while paused cost nothing.
 - Rows now follow the visible channels, the same layout the channel labels use,
   so each trace sits level with its label and the lane under it.
 
@@ -248,11 +254,24 @@ PNGs without the OpenGL window:
 
 ## Protocol decoder panel
 
-- **Enable** — toolbar "Protocol" menu: UART, I2C, CAN or Off. The Protocol dock
+### What to connect
+
+Probe the signal pins (3.3 V logic, common ground) and pick those channels in the Protocol
+menu. The pin names below are the eScope test board in `SIG_GEN` role (see the firmware
+README for the full pin map):
+
+| Protocol | Signals to probe | Test board pins |
+|---|---|---|
+| UART | TX (and/or RX) | PA2 (500 kbaud) |
+| I2C | SDA and SCL | PD13 (SDA), PD12 (SCL) |
+| CAN | transceiver RXD (bus) and/or TXD (node), never CANH/CANL | the same nets as PD0 (RX) and PD1 (TX), at the transceiver |
+| SPI | SCK, MOSI, MISO | PA5 (SCK), PA7 (MOSI); MISO is not used by the display |
+
+- **Enable** — toolbar "Protocol" menu: UART, I2C, CAN, SPI or Off. The Protocol dock
   appears/disappears with that menu; it has no float, close or minimize
   buttons and sits in the right-hand column. Resize it by dragging its edge.
 - **Pins** — no pins are assigned by default. Pick them yourself: TX/RX for
-  UART, SDA/SCL for I2C, CAN TX/RX for CAN (a pin can't be used for both roles).
+  UART, SDA/SCL for I2C, CAN TX/RX for CAN, CLK/MOSI/MISO for SPI (a pin can't be used for two roles).
 - **UART** — baud rate is auto-detected per line; decoded text shows the whole
   capture.
   Each capture burst is decoded on its own: a burst usually begins and ends
@@ -273,6 +292,11 @@ PNGs without the OpenGL window:
   frame: `<time>  RX  IDE 0x104EE814  DLC 8 4B 28 FF 05 02 3C 3A 8B  CRC 0x5D12 OK  ACK`.
   A TX pin always reads `NO ACK` because TXD does not show the acknowledge from other
   nodes; use RX for that.
+- **SPI** — three pickers: CLK, MOSI, MISO. CLK and at least one of MOSI or MISO are
+  required. The panel shows the measured clock and the mode it detected
+  (`SCK ~500.0 kHz, mode 0`). The hex log has one line per burst of words and data line:
+  `<time>  MOSI  2A 00 08 00 1A` and `<time>  MISO  FF 00 00 00 00`; a pause of more than 16
+  clock periods starts a new line.
 - **Timing** — on the waveform each I2C byte box runs from the SCL falling edge
   before its first bit to the SCL falling edge after its ACK clock, so boxes
   meet exactly and the ACK clock is inside; bits are still sampled on rising SCL.
@@ -302,6 +326,34 @@ Classic CAN 2.0A/B on one logic line (`core/decoders/can/`).
 
 The decoder is tested against an independent frame encoder (stuffing, CRC computed
 two ways) and against frames captured from a real DroneCAN sensor.
+
+## SPI decoder
+
+SPI master traffic on up to five lines in the decoder (three in the panel) (`core/decoders/spi/`).
+
+- **Lines:** CLK (required), MOSI and/or MISO. The decoder also accepts CS (chip select,
+  active low by default) and DC (data/command line of a display, low = command) when they
+  are passed to it; the Protocol panel offers only CLK, MOSI and MISO.
+- **Mode:** the clock polarity comes from the idle level of CLK (at chip-select assertion
+  when CS is present) and the clock phase from where the data lines change relative to the
+  clock edges, so no mode needs to be entered. This needs about four capture samples per
+  clock half period, so use clocks up to 8 MHz with the 48 MS/s eScope. The `mode`
+  parameter forces a mode (0 to 3).
+- **Clock glitches:** clock pulses shorter than a quarter of a half period (crosstalk or
+  ringing on the clock wire) are ignored; otherwise each would be read as an extra bit and
+  shift every byte after it.
+- **Sampling:** each data line is read a quarter bit before the sampling clock edge, in the
+  stable middle of the bit, so a spike coupled in from the clock edge itself is not read.
+- **Words:** 8 bits, MSB first by default; the `bits` (1 to 16) and `lsb` parameters change
+  that. A word shorter than expected, because the burst ended or chip select went
+  inactive, is reported as `[n BITS]`.
+- **Transactions:** with CS, each active window is a transaction; a burst that starts
+  inside one begins with a `~` marker and assumes the first clock edge is bit 0. Without CS
+  a pause of more than 16 clock periods ends a transaction, and a pause of more than 3 bit
+  times while a word is incomplete restarts the bit alignment, so a miscounted clock edge costs
+  one word instead of the rest of the burst.
+- **Not covered:** multi-slave topologies (decode each CS on its own), word sizes above 16
+  bits, QSPI and other multi-bit modes.
 
 ---
 
