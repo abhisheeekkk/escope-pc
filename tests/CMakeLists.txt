@@ -10,6 +10,7 @@ add_executable(escope_tests
     core/test_BurstFrame.cpp
     core/test_AnnotationLayout.cpp
     core/test_SessionSerializer.cpp
+    core/test_DecoderFixtures.cpp
 )
 
 target_link_libraries(escope_tests
@@ -24,6 +25,8 @@ target_include_directories(escope_tests
         ${CMAKE_SOURCE_DIR}/core
         ${CMAKE_SOURCE_DIR}/sim
 )
+
+target_compile_definitions(escope_tests PRIVATE ESCOPE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 
 include(GoogleTest)
 gtest_discover_tests(escope_tests)

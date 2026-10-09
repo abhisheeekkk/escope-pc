@@ -192,7 +192,7 @@ void UartDecoder::decode_burst(const DigitalEdge* e, std::size_t n, uint8_t ch_i
                 << std::setw(2) << std::setfill('0') << (int)f.val;
             if (std::isprint(f.val)) oss << " '" << (char)f.val << "'";
             ev.label  = oss.str();
-            ev.detail = "Baud: " + std::to_string(baud_) + "  Value: 0x" + oss.str();
+            ev.detail = "Baud: " + std::to_string(baud_) + "  Value: " + oss.str();
         }
         out.push_back(std::move(ev));
     }

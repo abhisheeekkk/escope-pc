@@ -1,0 +1,40 @@
+1042083.3 1042083.3 ch0 t2 e0 v-1 | SOF | Start of frame
+1044083.3 1066083.3 ch0 t1 e0 v291 | ID 0x123 | Standard (11-bit) identifier
+1066083.3 1080083.3 ch0 t4 e0 v8 | DLC 8 | Data length code
+1080083.3 1098083.3 ch0 t0 e0 v17 | 0x11 | Data byte 0x11
+1098083.3 1114083.3 ch0 t0 e0 v34 | 0x22 | Data byte 0x22
+1114083.3 1130083.3 ch0 t0 e0 v51 | 0x33 | Data byte 0x33
+1130083.3 1146083.3 ch0 t0 e0 v68 | 0x44 | Data byte 0x44
+1146083.3 1162083.3 ch0 t0 e0 v85 | 0x55 | Data byte 0x55
+1162083.3 1178083.3 ch0 t0 e0 v102 | 0x66 | Data byte 0x66
+1178083.3 1194083.3 ch0 t0 e0 v119 | 0x77 | Data byte 0x77
+1194083.3 1210083.3 ch0 t0 e0 v136 | 0x88 | Data byte 0x88
+1210083.3 1240083.3 ch0 t4 e0 v16951 | CRC 0x4237 OK | CRC-15 matches
+1242083.3 1244083.3 ch0 t4 e0 v1 | ACK | Acknowledged by a receiver
+1260083.3 1260083.3 ch0 t2 e0 v-1 | EOF | End of frame
+1272083.3 1272083.3 ch0 t2 e0 v-1 | SOF | Start of frame
+1274083.3 1340083.3 ch0 t1 e0 v520137490 | IDE 0x1F00AB12 | Extended (29-bit) identifier
+If this is DroneCAN: broadcast message type 171, priority 31, source node 18
+Tail byte 0xEF: start, end, toggle 1, transfer id 15
+1340083.3 1356083.3 ch0 t4 e0 v4 | DLC 4 | Data length code
+1356083.3 1372083.3 ch0 t0 e0 v222 | 0xDE | Data byte 0xDE
+1372083.3 1388083.3 ch0 t0 e0 v173 | 0xAD | Data byte 0xAD
+1388083.3 1406083.3 ch0 t0 e0 v190 | 0xBE | Data byte 0xBE
+1406083.3 1422083.3 ch0 t0 e0 v239 | 0xEF | Data byte 0xEF
+1422083.3 1456083.3 ch0 t4 e0 v512 | CRC 0x0200 OK | CRC-15 matches
+1458083.3 1460083.3 ch0 t4 e0 v1 | ACK | Acknowledged by a receiver
+1476083.3 1476083.3 ch0 t2 e0 v-1 | EOF | End of frame
+1488083.3 1488083.3 ch0 t2 e0 v-1 | SOF | Start of frame
+1490083.3 1516083.3 ch0 t1 e0 v2047 | ID 0x7FF | Standard (11-bit) identifier
+1516083.3 1532083.3 ch0 t4 e0 v0 | RTR DLC 0 | Remote frame (requests data, carries none)
+1532083.3 1562083.3 ch0 t4 e0 v21738 | CRC 0x54EA OK | CRC-15 matches
+1564083.3 1566083.3 ch0 t4 e0 v1 | ACK | Acknowledged by a receiver
+1582083.3 1582083.3 ch0 t2 e0 v-1 | EOF | End of frame
+1594083.3 1594083.3 ch0 t2 e0 v-1 | SOF | Start of frame
+1596083.3 1620083.3 ch0 t1 e0 v85 | ID 0x055 | Standard (11-bit) identifier
+1620083.3 1636083.3 ch0 t4 e0 v2 | DLC 2 | Data length code
+1636083.3 1654083.3 ch0 t0 e0 v1 | 0x01 | Data byte 0x01
+1654083.3 1672083.3 ch0 t0 e0 v2 | 0x02 | Data byte 0x02
+1672083.3 1704083.3 ch0 t4 e1 v8964 | CRC 0x2304 BAD | CRC-15 mismatch: the frame carries 0x2304, computed 0x2314
+1706083.3 1708083.3 ch0 t4 e0 v1 | ACK | Acknowledged by a receiver
+1724083.3 1724083.3 ch0 t2 e0 v-1 | EOF | End of frame

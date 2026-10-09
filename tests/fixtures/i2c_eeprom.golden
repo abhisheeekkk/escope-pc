@@ -1,0 +1,19 @@
+1107083.3 1107083.3 ch1 t2 e0 v-1 | START | START condition
+1112083.3 1227083.3 ch1 t1 e0 v160 | ADDR 0x50 W ACK | Address byte 0xA0 (7-bit 0x50, write)
+1227083.3 1339583.3 ch1 t0 e0 v1 | 0x01 ACK | Data byte 0x01
+1339583.3 1452083.3 ch1 t0 e0 v0 | 0x00 ACK | Data byte 0x00
+1452083.3 1564583.3 ch1 t0 e0 v222 | 0xDE ACK | Data byte 0xDE
+1564583.3 1677083.3 ch1 t0 e0 v173 | 0xAD ACK | Data byte 0xAD
+1689583.3 1689583.3 ch1 t2 e0 v-1 | STOP | STOP condition
+1904583.3 1904583.3 ch1 t2 e0 v-1 | START | START condition
+1909583.3 2024583.3 ch1 t1 e0 v160 | ADDR 0x50 W ACK | Address byte 0xA0 (7-bit 0x50, write)
+2024583.3 2137083.3 ch1 t0 e0 v1 | 0x01 ACK | Data byte 0x01
+2137083.3 2249583.3 ch1 t0 e0 v0 | 0x00 ACK | Data byte 0x00
+2257083.3 2257083.3 ch1 t2 e0 v-1 | Sr | Repeated START
+2262083.3 2377083.3 ch1 t1 e0 v161 | ADDR 0x50 R ACK | Address byte 0xA1 (7-bit 0x50, read)
+2377083.3 2489583.3 ch1 t0 e0 v222 | 0xDE ACK | Data byte 0xDE
+2489583.3 2602083.3 ch1 t0 e0 v173 | 0xAD NACK | Data byte 0xAD
+2614583.3 2614583.3 ch1 t2 e0 v-1 | STOP | STOP condition
+2729583.3 2729583.3 ch1 t2 e0 v-1 | START | START condition
+2734583.3 2849583.3 ch1 t1 e1 v208 | ADDR 0x68 W NACK | Address byte 0xD0 (7-bit 0x68, write)
+2862083.3 2862083.3 ch1 t2 e0 v-1 | STOP | STOP condition
