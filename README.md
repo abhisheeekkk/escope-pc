@@ -46,7 +46,6 @@ embeddedscope/
 ├── sim/                    ← SimulatedSource (synthetic signals, no hardware needed)
 ├── gui/                    ← Qt6 application (LGPL, dynamically linked)
 │   ├── waveform/           ← OpenGL waveform renderer (min-max decimation)
-│   ├── timeline/           ← Unified protocol timeline
 │   ├── panels/             ← Measurement and channel panels
 │   └── mainwindow/         ← Application shell
 ├── tools/                  ← escope_cli (headless capture + decode)

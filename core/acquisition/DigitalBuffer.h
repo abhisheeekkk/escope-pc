@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <deque>
 #include <cstdint>
 #include <cstddef>
 #include <mutex>
@@ -89,6 +90,10 @@ public:
     /// Get edges within a time window [t_start_ns, t_end_ns].
     std::vector<DigitalEdge> edges_in_range(double t_start_ns, double t_end_ns) const;
 
+    /// Time one channel spends high inside [t_start_ns, t_end_ns]. Costs a binary search plus the
+    /// edges in the range, so it is cheap enough to call every frame (used for duty cycle).
+    double high_time_ns(uint8_t channel, double t_start_ns, double t_end_ns) const;
+
     /// Total edge count across all channels.
     std::size_t total_edges() const;
 
@@ -98,13 +103,22 @@ public:
 
     void clear();
 
+    /// Remember where the newest burst triggered (or began, for an auto-triggered burst).
+    /// The live view lines this up near the left edge, as an oscilloscope does.
+    void   mark_trigger(double timestamp_ns);
+    /// Timestamp of the newest trigger, or a negative value if there has been none.
+    double last_trigger_ns() const;
+
     /// Time range covered. Returns {0,0} if empty.
     std::pair<double, double> time_range_ns() const;
 
 private:
     uint8_t                              num_channels_;
-    std::vector<std::vector<DigitalEdge>> edges_;  ///< Per-channel edge lists
+    // deque: appending a burst never copies the history and trimming the oldest edges is cheap,
+    // so the capture thread holds the lock only briefly and the GUI does not stall behind it.
+    std::vector<std::deque<DigitalEdge>> edges_;  ///< Per-channel edge lists
     std::vector<double>                  burst_ends_;
+    double                               last_trigger_ns_ = -1.0;
     mutable std::mutex                   mutex_;
 };
 

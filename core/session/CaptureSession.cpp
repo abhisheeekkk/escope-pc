@@ -1,27 +1,8 @@
 #include "session/CaptureSession.h"
 #include <stdexcept>
+#include <string>
 
 namespace escope {
-
-// Channel descriptions -- kept here so CLI tool and GUI both see the same names
-static const char* DIGITAL_LABELS[16] = {
-    "D0  UART0",   // 115200 baud
-    "D1  UART1",   // 9600 baud
-    "D2  SPI CLK", // 1 MHz
-    "D3  SPI MOSI",
-    "D4  SPI CS",
-    "D5  I2C SCL", // 400 kHz
-    "D6  I2C SDA",
-    "D7  PWM 50%", // 10 kHz
-    "D8  PWM 25%", // 1 kHz
-    "D9  PWM 75%", // 500 Hz
-    "D10 10kHz",
-    "D11 1kHz",
-    "D12 100Hz",
-    "D13 10Hz",
-    "D14 IRQ",     // 5us pulse / 2ms
-    "D15 LED",     // 100ms toggle
-};
 
 CaptureSession::CaptureSession(std::size_t analog_buf_size) {
     // Analog channels (kept for future use, not displayed in digital-only mode)
@@ -33,10 +14,10 @@ CaptureSession::CaptureSession(std::size_t analog_buf_size) {
         analog_bufs_.push_back(std::make_unique<SampleBuffer>(analog_buf_size));
     }
 
-    // Digital channels with descriptive labels
+    // Digital channels
     digital_info_.resize(MAX_DIGITAL_CH);
     for (std::size_t i = 0; i < MAX_DIGITAL_CH; ++i) {
-        digital_info_[i].label   = DIGITAL_LABELS[i];
+        digital_info_[i].label   = "D" + std::to_string(i);   // protocol roles are shown only once a decoder is chosen
         digital_info_[i].enabled = true;
     }
 

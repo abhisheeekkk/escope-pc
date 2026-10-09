@@ -1,15 +1,12 @@
 #include "mainwindow/MainWindow.h"
 #include "waveform/WaveformWidget.h"
-#include "timeline/TimelineWidget.h"
-#include "panels/MeasurementPanel.h"
 #include "panels/ChannelPanel.h"
 #include "panels/ProtocolPanel.h"
+#include "theme/Theme.h"
 
 #include "session/CaptureSession.h"
 #include "session/SessionSerializer.h"
-#include "SimulatedSource.h"
 #include "hal/IDataSource.h"
-#include "hal/StmDataSource.h"
 #include "hal/StmDataSource.h"
 
 #include <QApplication>
@@ -28,44 +25,33 @@
 #include <QPushButton>
 #include <QMenu>
 #include <QTimer>
-#include <QSplitter>
 #include <QMessageBox>
 #include <QLineEdit>
 #include <QDoubleValidator>
 #include <QDialog>
 #include <QFormLayout>
 #include <QDialogButtonBox>
+#include <QShortcut>
+#include <QGridLayout>
+#include <QHBoxLayout>
 #include <thread>
 
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("EmbeddedScope v0.1  [Digital Logic Analyzer]");
+    setWindowTitle("EmbeddedScope");
     resize(1400, 900);
 
     session_ = std::make_unique<escope::CaptureSession>();
 
-    escope::SimulatedSourceConfig sim_cfg;
-    sim_cfg.digital_rate = 50e6;
-    sim_cfg.gen_uart     = true;
-    source_ = std::make_unique<escope::SimulatedSource>(sim_cfg);
-
-    // Central widget: waveform + protocol timeline
-    auto* splitter   = new QSplitter(Qt::Vertical, this);
     waveform_widget_ = new WaveformWidget(this);
-    timeline_widget_ = new TimelineWidget(this);
-    splitter->addWidget(waveform_widget_);
-    splitter->addWidget(timeline_widget_);
-    splitter->setStretchFactor(0, 4);
-    splitter->setStretchFactor(1, 1);
-    setCentralWidget(splitter);
+    setCentralWidget(waveform_widget_);
 
     setupDockWidgets();
     setupMenuBar();
     setupToolBar();
     setupStatusBar();
-    connectSource();
 
     // 30 Hz display refresh
     display_timer_ = new QTimer(this);
@@ -75,71 +61,85 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
-    source_->stop();
-    source_->close();
+    if (source_) { source_->stop(); source_->close(); }
 }
 
 void MainWindow::setupMenuBar() {
     auto* file = menuBar()->addMenu("&File");
 
-    file->addAction("&Open Session...", this, [this]{
-        QString dir = QFileDialog::getExistingDirectory(this, "Open Session Directory",
-            QStandardPaths::writableLocation(QStandardPaths::HomeLocation));
+    file->addAction("&Open Session…", this, [this]{
+        if (io_busy_) { setStatus("Another file operation is still running."); return; }
+        const QString dir = QFileDialog::getExistingDirectory(this, "Open Session",
+            QStandardPaths::writableLocation(QStandardPaths::HomeLocation),
+            QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
         if (dir.isEmpty()) return;
-        auto loaded = escope::SessionSerializer::load(dir.toStdString());
-        if (!loaded) {
-            QMessageBox::warning(this, "Open Failed",
-                "Could not load session from:\n" + dir);
-            return;
-        }
-        source_->stop();
-        session_ = std::move(loaded);
-        capturing_ = false;
-        waveform_widget_->setFollowLatest(false);
-        waveform_widget_->setSession(session_.get());
-        waveform_widget_->zoomFit();
-        act_start_->setEnabled(true);
-        act_stop_->setEnabled(false);
-        status_label_->setText("Session loaded -- " + dir);
+
+        // Load on a worker thread so the window stays responsive, then swap the session in here
+        io_busy_ = true;
+        setStatus("Opening session\u2026");
+        const std::string path = dir.toStdString();
+        std::thread([this, path, dir] {
+            auto* raw = escope::SessionSerializer::load(path).release();
+            QMetaObject::invokeMethod(this, [this, raw, dir] {
+                std::unique_ptr<escope::CaptureSession> loaded(raw);
+                io_busy_ = false;
+                if (!loaded) {
+                    QMessageBox::warning(this, "Open Session",
+                        "The session could not be loaded from:\n" + dir);
+                    return;
+                }
+                if (source_) source_->stop();
+                session_ = std::move(loaded);
+                capturing_ = false;
+                waveform_widget_->setFollowLatest(false);
+                waveform_widget_->setSession(session_.get());
+                waveform_widget_->zoomFit();
+                act_start_->setEnabled(source_ != nullptr);
+                act_stop_->setEnabled(false);
+                setStatus("Session loaded: " + QFileInfo(dir).fileName());
+            }, Qt::QueuedConnection);
+        }).detach();
     });
 
-    file->addAction("&Save Session...", this, [this]{
-        QString dir = QFileDialog::getSaveFileName(this, "Save Session",
-            QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/escope_session");
+    file->addAction("&Save Session…", this, [this]{
+        if (io_busy_) { setStatus("Another file operation is still running."); return; }
+        const QString dir = QFileDialog::getSaveFileName(this, "Save Session",
+            QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/escope_session",
+            QString(), nullptr, QFileDialog::DontUseNativeDialog);
         if (dir.isEmpty()) return;
-        status_label_->setText("Saving...");
-        act_start_->setEnabled(false);
+        io_busy_ = true;
+        setStatus("Saving session\u2026");
         auto* sess = session_.get();
-        std::string path = dir.toStdString();
-        auto* lbl = status_label_;
-        auto* btn = act_start_;
-        std::thread([sess, path, lbl, btn]{
+        const std::string path = dir.toStdString();
+        std::thread([this, sess, path] {
             escope::SessionSerializer::save(*sess, path);
-            QMetaObject::invokeMethod(lbl, [lbl, btn, d=QString::fromStdString(path)]{
-                lbl->setText("Saved: " + QFileInfo(d).fileName());
-                btn->setEnabled(true);
+            QMetaObject::invokeMethod(this, [this, path] {
+                io_busy_ = false;
+                setStatus("Session saved: " + QFileInfo(QString::fromStdString(path)).fileName());
             }, Qt::QueuedConnection);
         }).detach();
     });
 
     file->addSeparator();
 
-    file->addAction("Export &PNG...", this, [this]{
-        QString path = QFileDialog::getSaveFileName(this, "Export Waveform Image",
+    file->addAction("Export &Image…", this, [this]{
+        QString path = QFileDialog::getSaveFileName(this, "Export Image",
             QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + "/waveform.png",
-            "PNG Image (*.png)");
+            "PNG Image (*.png)", nullptr, QFileDialog::DontUseNativeDialog);
         if (path.isEmpty()) return;
-        QPixmap px = waveform_widget_->grab();
-        if (px.save(path, "PNG"))
-            status_label_->setText("PNG saved: " + QFileInfo(path).fileName());
+        // Take the picture from the render buffer so the overlay (labels, cursors, readout) is included
+        QImage img = waveform_widget_->grabFramebuffer();
+        if (img.isNull()) img = waveform_widget_->grab().toImage();
+        if (img.save(path, "PNG"))
+            setStatus("Image saved: " + QFileInfo(path).fileName());
         else
-            QMessageBox::warning(this, "Export Failed", "Could not save PNG to:\n" + path);
+            QMessageBox::warning(this, "Export Image", "The image could not be saved to:\n" + path);
     });
 
-    file->addAction("Export &CSV...", this, [this]{
+    file->addAction("Export &CSV…", this, [this]{
         QString path = QFileDialog::getSaveFileName(this, "Export CSV",
             QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/waveform.csv",
-            "CSV files (*.csv)");
+            "CSV files (*.csv)", nullptr, QFileDialog::DontUseNativeDialog);
         if (path.isEmpty()) return;
         double t0 = 0, t1 = 0;
         int ref = waveform_widget_->measRef();
@@ -154,7 +154,7 @@ void MainWindow::setupMenuBar() {
             t0 = std::min(curs[ref].t_ns, curs[tgt].t_ns);
             t1 = std::max(curs[ref].t_ns, curs[tgt].t_ns);
         }
-        status_label_->setText("Exporting CSV...");
+        setStatus("Exporting CSV…");
         auto* sess = session_.get();
         std::string csv = path.toStdString();
         auto* lbl = status_label_;
@@ -170,43 +170,101 @@ void MainWindow::setupMenuBar() {
     file->addAction("E&xit", qApp, &QApplication::quit);
 
     auto* view = menuBar()->addMenu("&View");
-    view->addAction("Measurements", measure_dock_, &QDockWidget::setVisible);
-    view->addAction("Channels",     channel_dock_, &QDockWidget::setVisible);
+    view->addAction(channel_dock_->toggleViewAction());
 
     auto* help = menuBar()->addMenu("&Help");
-    help->addAction("&About", this, [this]{
-        QMessageBox::about(this, "EmbeddedScope",
-            "<b>EmbeddedScope v0.1 -- Digital Logic Analyzer</b><br><br>"
-            "<b>16 channels simulated:</b><br>"
-            "D0 UART 115200 / D1 UART 9600<br>"
-            "D2/3/4 SPI 1MHz / D5/6 I2C 400kHz<br>"
-            "D7 PWM 10kHz 50% / D8 PWM 1kHz 25% / D9 PWM 500Hz 75%<br>"
-            "D10 10kHz / D11 1kHz / D12 100Hz / D13 10Hz<br>"
-            "D14 IRQ pulse 5us/2ms / D15 LED 100ms<br><br>"
-            "<b>Controls:</b><br>"
-            "Click = place cursor | Drag cursor = move | RClick cursor = delete<br>"
-            "Del = clear all cursors | L = resume rolling<br>"
-            "[ / ] = jump to previous / next edge | Home / End = start / end of capture<br>"
-            "Drag a rectangle = zoom to that area<br>"
-            "Scroll = zoom time | Drag (right-click+drag) = pan<br>"
-            "F = fit view | +/- = zoom in/out | arrow keys = pan");
+    help->addAction("&Controls", this, [this]{ showControlsSheet(); });
+    help->addAction("&About EmbeddedScope", this, [this]{
+        QMessageBox::about(this, "About EmbeddedScope",
+            "<b>EmbeddedScope</b> " + QApplication::applicationVersion() + "<br>"
+            "Logic analyzer and protocol decoder.<br><br>"
+            "8 channels at 48 MS/s over USB.<br>"
+            "UART, I2C, SPI and CAN decoding.");
     });
+}
+
+void MainWindow::setStatus(const QString& text) {
+    // The dot shows the state at a glance: green while capturing, amber when a trigger is armed
+    // or has fired, grey otherwise.
+    QColor c = theme::kTextFaint;
+    if (capturing_) c = theme::kGreen;
+    if (text.startsWith("Single") || text.startsWith("Triggered")) c = theme::kOrange;
+    status_label_->setText(QString("<span style='color:%1; font-size:13pt'>&#9679;</span>&nbsp; %2")
+                               .arg(c.name(), text.toHtmlEscaped()));
+}
+
+void MainWindow::showControlsSheet() {
+    if (controls_dlg_) { controls_dlg_->show(); controls_dlg_->raise(); controls_dlg_->activateWindow(); return; }
+    controls_dlg_ = new QDialog(this);
+    controls_dlg_->setWindowTitle("Controls");
+    controls_dlg_->setModal(false);                      // never blocks the main window
+    controls_dlg_->setAttribute(Qt::WA_DeleteOnClose, false);
+    auto* grid = new QGridLayout(controls_dlg_);
+    grid->setContentsMargins(24, 22, 24, 22);
+    grid->setHorizontalSpacing(28);
+    grid->setVerticalSpacing(11);
+
+    struct Row { const char* what; QStringList keys; };
+    const std::vector<std::pair<QString, std::vector<Row>>> groups = {
+        {"Capture", {{"Start or stop", {"Space"}}, {"Resume the live view", {"L"}}}},
+        {"View", {{"Zoom in or out", {"+", "-"}}, {"Zoom about the pointer", {"Ctrl", "Scroll"}},
+                  {"Zoom to an area", {"Drag"}}, {"Pan", {"Scroll"}}, {"Fit the capture", {"F"}},
+                  {"Previous or next edge", {"[", "]"}}, {"Start or end of capture", {"Home", "End"}}}},
+        {"Cursors", {{"Move a cursor", {"Drag"}}, {"Delete a cursor", {"Right-click"}},
+                     {"Clear all cursors", {"Delete"}}, {"Choose the pair shown", {"Click a badge"}}}},
+    };
+    int r = 0;
+    for (const auto& g : groups) {
+        auto* h = new QLabel(g.first.toUpper());
+        QFont f = theme::ui(8.0, QFont::DemiBold);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+        h->setFont(f);
+        h->setStyleSheet(QString("color:%1; padding-top:%2px;").arg(theme::css(theme::kTextMuted)).arg(r ? 10 : 0));
+        grid->addWidget(h, r++, 0, 1, 2);
+        for (const auto& row : g.second) {
+            grid->addWidget(new QLabel(row.what), r, 0);
+            auto* keys = new QHBoxLayout;
+            keys->setSpacing(5);
+            keys->addStretch();
+            for (const auto& k : row.keys) {
+                auto* cap = new QLabel(k);
+                cap->setObjectName("keycap");
+                cap->setFont(theme::mono(9.0, QFont::DemiBold));
+                keys->addWidget(cap);
+            }
+            grid->addLayout(keys, r++, 1);
+        }
+    }
+    controls_dlg_->show();
 }
 
 void MainWindow::setupToolBar() {
     auto* tb = addToolBar("Capture");
     tb->setMovable(false);
+    tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
 
-    // Momentary buttons, not persistent toggles -- AUTO/SINGLE fire an
-    // action (autoset T/div, arm a single capture) rather than representing
-    // a mode that should stay visually highlighted afterwards.
-    act_auto_   = tb->addAction("AUTO");
-    act_single_ = tb->addAction("SINGLE");
+    // Momentary buttons: Auto and Single fire an action (autoset T/div, arm a
+    // single capture) rather than a mode that stays highlighted.
+    act_auto_   = tb->addAction("Auto");
+    act_single_ = tb->addAction("Single");
+    act_auto_->setToolTip("Auto: scale the time base to the signal");
+    act_single_->setToolTip("Single: capture one triggered burst, then stop");
     tb->addSeparator();
-    act_start_  = tb->addAction("Run");
-    act_stop_   = tb->addAction("Stop");
+    act_start_  = tb->addAction(QString::fromUtf8("\u25B6  Run"));
+    act_stop_   = tb->addAction(QString::fromUtf8("\u25A0  Stop"));
+    act_start_->setToolTip("Start continuous capture (Space)");
+    act_stop_->setToolTip("Stop capture (Space)");
     act_stop_->setEnabled(false);
+    act_start_->setEnabled(false);       // until a device is connected
+    act_single_->setEnabled(false);
     tb->addSeparator();
+
+    if (auto* b = tb->widgetForAction(act_start_)) b->setObjectName("runButton");
+    if (auto* b = tb->widgetForAction(act_stop_))  b->setObjectName("stopButton");
+
+    // Space starts or stops, the way media and design tools behave
+    auto* space = new QShortcut(QKeySequence(Qt::Key_Space), this);
+    connect(space, &QShortcut::activated, this, [this] { capturing_ ? onStopCapture() : onStartCapture(); });
 
     connect(act_start_,  &QAction::triggered, this, &MainWindow::onStartCapture);
     connect(act_stop_,   &QAction::triggered, this, &MainWindow::onStopCapture);
@@ -215,12 +273,10 @@ void MainWindow::setupToolBar() {
 
     /* ---- Time/div dropdown ---- */
     tb->addSeparator();
-    auto* tdiv_label = new QLabel("  T/div:", tb);
-    tdiv_label->setStyleSheet("color:#aaa;");
-    tb->addWidget(tdiv_label);
+    tb->addWidget(new QLabel("Time/div ", tb));
 
     auto* tdiv_combo = new QComboBox(tb);
-    tdiv_combo->setStyleSheet("color:#eee; background:#333; min-width:80px;");
+    tdiv_combo->setToolTip("Time per division");
     const QStringList tdiv_labels = {
         "10 ns","50 ns","100 ns","500 ns","1 us","5 us","10 us","50 us",
         "100 us","500 us","1 ms","5 ms","10 ms","50 ms",
@@ -231,9 +287,9 @@ void MainWindow::setupToolBar() {
         100e3,500e3,1e6,5e6,10e6,50e6,
         100e6,500e6,1e9,5e9,10e9,50e9
     };
-    const int custom_idx = tdiv_labels.size(); /* "Custom..." lives past every preset */
+    const int custom_idx = tdiv_labels.size(); /* "Custom…" lives past every preset */
     for (const auto& s : tdiv_labels) tdiv_combo->addItem(s);
-    tdiv_combo->addItem("Custom...");
+    tdiv_combo->addItem("Custom…");
     tdiv_combo->setCurrentIndex(10); /* 1 ms default */
     tb->addWidget(tdiv_combo);
     connect(waveform_widget_, &WaveformWidget::timeDivChanged,
@@ -254,9 +310,9 @@ void MainWindow::setupToolBar() {
             if (!waveform_widget_) return;
             if (idx != custom_idx) { waveform_widget_->setTimePerDiv(tdiv_values[idx]); return; }
 
-            // "Custom..." selected -- pop a small dialog for value + unit.
+            // "Custom…" selected -- pop a small dialog for value + unit.
             QDialog dlg(this);
-            dlg.setWindowTitle("Custom T/div");
+            dlg.setWindowTitle("Custom Time/div");
             auto* form = new QFormLayout(&dlg);
 
             auto* value_edit = new QLineEdit(&dlg);
@@ -283,11 +339,11 @@ void MainWindow::setupToolBar() {
                 if (ok && value > 0.0)
                     waveform_widget_->setTimePerDiv(value * unit_ns[unit_combo->currentIndex()]);
             }
-            // Leaving "Custom..." selected would re-open the dialog the next
+            // Leaving "Custom…" selected would re-open the dialog the next
             // time this index fires; timeDivChanged (emitted by
             // setTimePerDiv) moves the combo back to the nearest matching
             // preset. If the dialog was cancelled, do that ourselves so the
-            // combo doesn't sit stuck on "Custom...".
+            // combo doesn't sit stuck on "Custom…".
             if (tdiv_combo->currentIndex() == custom_idx) {
                 QSignalBlocker blocker(tdiv_combo);
                 tdiv_combo->setCurrentIndex(10);
@@ -298,6 +354,8 @@ void MainWindow::setupToolBar() {
     tb->addSeparator();
     auto* act_add_cursor   = tb->addAction("Add Cursor");
     auto* act_clear_cursor = tb->addAction("Clear Cursors");
+    act_add_cursor->setToolTip("Place a cursor at the centre of the view");
+    act_clear_cursor->setToolTip("Remove all cursors");
     connect(act_add_cursor, &QAction::triggered, this, [this]() {
         if (waveform_widget_) waveform_widget_->addCursorAtCenter();
     });
@@ -307,16 +365,11 @@ void MainWindow::setupToolBar() {
 
     /* ---- Channel selector ---- */
     tb->addSeparator();
-    auto* ch_label = new QLabel("  Ch:", tb);
-    ch_label->setStyleSheet("color:#aaa;");
-    tb->addWidget(ch_label);
-
-    auto* ch_btn = new QPushButton("Select", tb);
-    ch_btn->setStyleSheet("color:#eee; background:#333; padding:2px 6px;");
+    auto* ch_btn = new QPushButton("Channels", tb);
+    ch_btn->setToolTip("Choose which channels are displayed");
     tb->addWidget(ch_btn);
 
     auto* ch_menu = new QMenu(ch_btn);
-    ch_menu->setStyleSheet("color:#eee; background:#222;");
     for (int i = 0; i < 8; i++) {
         auto* act = ch_menu->addAction(QString("D%1").arg(i));
         act->setCheckable(true);
@@ -324,8 +377,13 @@ void MainWindow::setupToolBar() {
         ch_actions_[i] = act;
         connect(act, &QAction::toggled, this, [this, i](bool checked) {
             if (waveform_widget_) waveform_widget_->setChannelVisible(i, checked);
+            if (channel_panel_)   channel_panel_->setChannelVisible(i, checked);
         });
+        channel_panel_->setChannelVisible(i, i == 0);
     }
+    connect(channel_panel_, &ChannelPanel::channelClicked, this, [this](int i) {
+        if (ch_actions_[i]) ch_actions_[i]->toggle();
+    });
     /* Select All / None */
     ch_menu->addSeparator();
     auto* all_act  = ch_menu->addAction("All");
@@ -343,11 +401,10 @@ void MainWindow::setupToolBar() {
     /* ---- Protocol decoder selector (dock stays hidden until one is chosen) ---- */
     tb->addSeparator();
     auto* proto_btn = new QPushButton("Protocol", tb);
-    proto_btn->setStyleSheet("color:#eee; background:#333; padding:2px 6px;");
+    proto_btn->setToolTip("Choose a protocol decoder");
     tb->addWidget(proto_btn);
 
     auto* proto_menu  = new QMenu(proto_btn);
-    proto_menu->setStyleSheet("color:#eee; background:#222;");
     auto* proto_group = new QActionGroup(proto_menu);
     auto* proto_off   = proto_menu->addAction("Off");
     auto* proto_uart  = proto_menu->addAction("UART");
@@ -373,18 +430,17 @@ void MainWindow::setupToolBar() {
         proto_menu->exec(proto_btn->mapToGlobal(QPoint(0, proto_btn->height())));
     });
 
-    // STM32 hardware toggle
+    // Hardware connection toggle
     tb->addSeparator();
-    auto* act_hw = tb->addAction("Connect eScope");
+    auto* act_hw = tb->addAction("Connect Device");
+    act_hw->setToolTip("Connect to an eScope device over USB");
     act_hw->setCheckable(true);
     connect(act_hw, &QAction::toggled, this, [this, act_hw](bool checked) {
         if (checked) {
-            source_->stop();
-            source_->close();
             auto stm = std::make_unique<escope::StmDataSource>();
             if (stm->enumerate().empty()) {
                 act_hw->setChecked(false);
-                status_label_->setText("eScope not found -- check /dev/ttyACM*");
+                setStatus("No eScope device found. Check the USB connection.");
                 return;
             }
             source_ = std::move(stm);
@@ -398,36 +454,39 @@ void MainWindow::setupToolBar() {
             waveform_widget_->resetCaptureTime();
             act_stop_->setEnabled(true);
             act_start_->setEnabled(false);
-            act_hw->setText("Disconnect eScope");
-            status_label_->setText("Connected to STM32 EmbeddedScope");
+            act_single_->setEnabled(true);
+            act_hw->setText("Disconnect Device");
+            setStatus("Connected to eScope device");
         } else {
-            source_->stop();
-            source_->close();
+            if (source_) { source_->stop(); source_->close(); source_.reset(); }
             capturing_ = false;
-            escope::SimulatedSourceConfig cfg;
-            cfg.digital_rate = 50e6;
-            cfg.gen_uart = true;
-            source_ = std::make_unique<escope::SimulatedSource>(cfg);
-            connectSource();
-            act_start_->setEnabled(true);
+            act_start_->setEnabled(false);
+            act_single_->setEnabled(false);
             act_stop_->setEnabled(false);
-            act_hw->setText("Connect eScope");
-            status_label_->setText("Simulated device");
+            act_hw->setText("Connect Device");
+            setStatus("No device connected. Connect a device to start capturing.");
         }
     });
 }
 
-void MainWindow::setupDockWidgets() {
-    measure_panel_ = new MeasurementPanel(this);
-    measure_dock_  = new QDockWidget("Measurements", this);
-    measure_dock_->setWidget(measure_panel_);
-    measure_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    addDockWidget(Qt::RightDockWidgetArea, measure_dock_);
+// A quiet, small-caps style title in place of the stock dock title bar.
+static QLabel* dockHeader(const QString& text) {
+    auto* l = new QLabel(text.toUpper());
+    QFont f = theme::ui(8.0, QFont::DemiBold);
+    f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
+    l->setFont(f);
+    l->setStyleSheet(QString("color:%1; padding:14px 16px 8px 16px; background:transparent;")
+                         .arg(theme::css(theme::kTextMuted)));
+    return l;
+}
 
+void MainWindow::setupDockWidgets() {
     channel_panel_ = new ChannelPanel(this);
     channel_dock_  = new QDockWidget("Channels", this);
     channel_dock_->setWidget(channel_panel_);
     channel_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    channel_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    channel_dock_->setTitleBarWidget(dockHeader("Channels"));
     addDockWidget(Qt::LeftDockWidgetArea, channel_dock_);
 
     protocol_panel_ = new ProtocolPanel(this);
@@ -437,6 +496,7 @@ void MainWindow::setupDockWidgets() {
     // Fixed in place: no float/close/move buttons. It appears and disappears
     // via the toolbar's Protocol menu and is resized by dragging its edge.
     protocol_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    protocol_dock_->setTitleBarWidget(dockHeader("Protocol"));
     addDockWidget(Qt::RightDockWidgetArea, protocol_dock_);
     protocol_dock_->hide();   // shown only once a protocol is picked in the toolbar
 
@@ -448,6 +508,7 @@ void MainWindow::setupDockWidgets() {
         });
     connect(protocol_panel_, &ProtocolPanel::annotationsCleared, this,
         [this]{ waveform_widget_->clearAnnotations(); });
+    connect(protocol_panel_, &ProtocolPanel::pinRolesChanged, channel_panel_, &ChannelPanel::setRoles);
     connect(protocol_panel_, &ProtocolPanel::pinsChanged, this,
         [this](QVector<int> chans) {
             for (int ch : chans)
@@ -457,8 +518,10 @@ void MainWindow::setupDockWidgets() {
 }
 
 void MainWindow::setupStatusBar() {
-    status_label_ = new QLabel("Ready -- Simulated 16-channel device");
+    status_label_ = new QLabel();
+    status_label_->setTextFormat(Qt::RichText);
     statusBar()->addWidget(status_label_);
+    setStatus("No device connected. Connect a device to start capturing.");
 }
 
 void MainWindow::connectSource() {
@@ -469,11 +532,9 @@ void MainWindow::connectSource() {
         Q_UNUSED(evt);
         QMetaObject::invokeMethod(this, [this]{
             bool single = session_->trigger().config().mode == escope::TriggerMode::Single;
-            status_label_->setText(single ? "Triggered -- single capture stopped"
+            setStatus(single ? "Triggered. Single capture complete."
                                            : "Triggered");
-            // SINGLE mode: capture exactly one triggered burst, then stop.
-            // Previously AUTO/SINGLE only recorded a mode nobody ever acted
-            // on, so SINGLE never actually stopped anything.
+            // Single mode: capture exactly one triggered burst, then stop.
             if (single && capturing_) onStopCapture();
         }, Qt::QueuedConnection);
     });
@@ -481,6 +542,7 @@ void MainWindow::connectSource() {
 }
 
 void MainWindow::onStartCapture() {
+    if (!source_) { setStatus("No device connected. Connect a device to start capturing."); return; }
     // Run always means continuous capture until Stop, regardless of
     // whatever mode a previous SINGLE press left behind -- otherwise
     // pressing Run after a single-shot capture would immediately arm
@@ -497,11 +559,11 @@ void MainWindow::onStartCapture() {
     waveform_widget_->resetCaptureTime();
     act_start_->setEnabled(false);
     act_stop_->setEnabled(true);
-    status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Rolling]");
+    setStatus("Capturing: 8 channels, 48 MS/s (live)");
 }
 
 void MainWindow::onStopCapture() {
-    source_->stop();
+    if (source_) source_->stop();
     capturing_ = false;
     /* Freeze the view -- stop scrolling, keep data visible, keep whatever
      * T/div the user had selected (zoomFit() used to reset it to fit the
@@ -512,7 +574,7 @@ void MainWindow::onStopCapture() {
     }
     act_start_->setEnabled(true);
     act_stop_->setEnabled(false);
-    status_label_->setText("Stopped -- right-click to add cursors, scroll to zoom");
+    setStatus("Stopped. Drag to zoom into an area, scroll to pan.");
 }
 
 void MainWindow::onNewData() {}
@@ -526,14 +588,13 @@ void MainWindow::onUpdateDisplay() {
     // Status bar
     if (capturing_ && display_frame_ % 10 == 0) {
         if (waveform_widget_->followLatest())
-            status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Rolling]");
+            setStatus("Capturing: 8 channels, 48 MS/s (live)");
         else
-            status_label_->setText("Capturing -- STM32 8ch 48 MS/s  [Paused -- L to resume]");
+            setStatus("Capturing: 8 channels, 48 MS/s (view paused, press L to follow)");
     }
 
     // Panels at ~6 Hz
     if (display_frame_ % 5 == 0) {
-        measure_panel_->updateFrom(*session_);
         channel_panel_->updateFrom(*session_);
     }
     // Protocol decode is heavier: ~5 Hz (skipped when nothing changed)
@@ -546,6 +607,7 @@ void MainWindow::onUpdateDisplay() {
 }
 
 void MainWindow::onTriggerSingle() {
+    if (!source_) { setStatus("No device connected. Connect a device to start capturing."); return; }
     // SINGLE is self-contained: run continuously for a moment first --
     // arming single-shot mode immediately would usually stop after the
     // very next burst (bursts arrive fast), before there's anything useful
@@ -567,16 +629,16 @@ void MainWindow::onTriggerSingle() {
         act_start_->setEnabled(false);
         act_stop_->setEnabled(true);
     }
-    status_label_->setText("Single -- running, will grab one capture shortly");
+    setStatus("Single: waiting to arm");
 
     static constexpr int SINGLE_SETTLE_MS = 1000;
     QTimer::singleShot(SINGLE_SETTLE_MS, this, [this]() {
-        if (!capturing_) return; // Stop was pressed during the settle delay
+        if (!capturing_ || !source_) return; // Stop was pressed during the settle delay
         escope::TriggerConfig cfg = session_->trigger().config();
         cfg.mode = escope::TriggerMode::Single;
         session_->trigger().set_config(cfg);
         source_->configure(*session_);          // device: wait for a real trigger
-        status_label_->setText("Single trigger armed -- waiting for one capture");
+        setStatus("Single: armed, waiting for a trigger");
     });
 }
 
@@ -584,15 +646,15 @@ void MainWindow::onTriggerAuto() {
     escope::TriggerConfig cfg = session_->trigger().config();
     cfg.mode = escope::TriggerMode::Auto;
     session_->trigger().set_config(cfg);
-    source_->configure(*session_);
+    if (source_) source_->configure(*session_);
 
     // AUTO also autosets T/div from the signal itself, like a scope's
     // "Autoset" -- measure the visible channel's period from recent edges
     // and fit a few cycles across the screen.
     if (waveform_widget_) {
         if (waveform_widget_->autoScaleTimeDiv())
-            status_label_->setText("Auto -- T/div scaled to signal frequency");
+            setStatus("Auto: time base scaled to the signal");
         else
-            status_label_->setText("Auto -- not enough signal to measure frequency yet");
+            setStatus("Auto: not enough signal to measure yet");
     }
 }

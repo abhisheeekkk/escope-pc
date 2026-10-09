@@ -9,6 +9,8 @@
 #include <QPainter>
 #include <QImage>
 #include <QColor>
+#include "theme/Theme.h"
+#include <QVariantAnimation>
 
 #include "acquisition/SampleBuffer.h"
 #include "acquisition/DigitalBuffer.h"
@@ -34,13 +36,7 @@ struct WaveformCursor {
 
     static constexpr int MAX_CURSORS = 8;
 
-    static QColor color(int idx) {
-        static const QColor pal[8] = {
-            {255,200, 50}, {50,200,255}, {255,80,180}, {80,255,120},
-            {255,120, 50}, {160,80,255}, {255,255,255}, {255,50,50}
-        };
-        return pal[idx % 8];
-    }
+    static QColor color(int idx) { return theme::cursor(idx); }
 };
 
 // ─── WaveformWidget ───────────────────────────────────────────────────────────
@@ -125,6 +121,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent*) override;
     void wheelEvent(QWheelEvent*)        override;
     void keyPressEvent(QKeyEvent*)       override;
+    void leaveEvent(QEvent*)             override;
 
 private:
     struct ChannelLayout { float top, bot, mid, px_per_volt; };
@@ -148,6 +145,8 @@ private:
     float  voltToPixel(float v, int ch) const;
     float  pixelToVolt(float y, int ch) const;
     void   clampTimeOffset();
+    /// Glide to a new zoom and position instead of jumping (about 180 ms, eased).
+    void   animateView(double time_per_div_ns, double offset_ns);
 
     void   updateCursorVoltages(WaveformCursor& c);
 
@@ -165,12 +164,16 @@ private:
     QOpenGLBuffer  grid_vbo_ {QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer  wave_vbo_ {QOpenGLBuffer::VertexBuffer};
     int            grid_vertex_count_ = 0;
-    static constexpr int MAX_WAVE_VERTS = 16 * 1024;
+    static constexpr int MAX_WAVE_VERTS = 32 * 1024;
 
     // Per-frame reused buffers
     std::vector<escope::AnalogSample> snap_[2];
     std::vector<escope::DigitalEdge>  dig_snap_;
     std::vector<float>                wave_verts_;
+
+    // Animated view changes
+    QVariantAnimation* view_anim_ = nullptr;
+    double anim_from_tdiv_ = 0, anim_from_off_ = 0, anim_to_tdiv_ = 0, anim_to_off_ = 0;
 
     // View state
     double time_offset_ns_  = 0.0;

@@ -15,9 +15,9 @@ DigitalBuffer::DigitalBuffer(uint8_t num_channels)
 }
 
 namespace {
-void cap_channel(std::vector<DigitalEdge>& ch) {
+void cap_channel(std::deque<DigitalEdge>& ch) {
     if (ch.size() > DigitalBuffer::MAX_EDGES_PER_CHANNEL)
-        ch.erase(ch.begin(), ch.end() - DigitalBuffer::MAX_EDGES_PER_CHANNEL);
+        ch.erase(ch.begin(), ch.end() - static_cast<std::ptrdiff_t>(DigitalBuffer::MAX_EDGES_PER_CHANNEL));
 }
 } // namespace
 
@@ -66,7 +66,7 @@ bool DigitalBuffer::level_at(uint8_t channel, double timestamp_ns) const {
 std::vector<DigitalEdge> DigitalBuffer::edges_for_channel(uint8_t channel) const {
     if (channel >= num_channels_) return {};
     std::lock_guard<std::mutex> lock(mutex_);
-    return edges_[channel];
+    return std::vector<DigitalEdge>(edges_[channel].begin(), edges_[channel].end());
 }
 
 std::vector<DigitalEdge> DigitalBuffer::last_edges(uint8_t channel, std::size_t count) const {
@@ -111,6 +111,23 @@ std::vector<DigitalEdge> DigitalBuffer::edges_in_range(double t_start_ns, double
     return result;
 }
 
+double DigitalBuffer::high_time_ns(uint8_t channel, double t0, double t1) const {
+    if (channel >= num_channels_ || t1 <= t0) return 0.0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& ch = edges_[channel];
+    auto lo = std::upper_bound(ch.begin(), ch.end(), t0,
+        [](double t, const DigitalEdge& e) { return t < e.timestamp_ns; });
+    bool   high = lo != ch.begin() && (lo - 1)->rising;
+    double t    = t0, total = 0.0;
+    for (auto it = lo; it != ch.end() && it->timestamp_ns < t1; ++it) {
+        if (high) total += it->timestamp_ns - t;
+        t = it->timestamp_ns;
+        high = it->rising;
+    }
+    if (high) total += t1 - t;
+    return total;
+}
+
 void DigitalBuffer::trim_before(double cutoff_ns) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& ch : edges_) {
@@ -136,10 +153,21 @@ std::size_t DigitalBuffer::edge_count(uint8_t channel) const {
     return edges_[channel].size();
 }
 
+void DigitalBuffer::mark_trigger(double timestamp_ns) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_trigger_ns_ = timestamp_ns;
+}
+
+double DigitalBuffer::last_trigger_ns() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_trigger_ns_;
+}
+
 void DigitalBuffer::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& ch : edges_) ch.clear();
     burst_ends_.clear();
+    last_trigger_ns_ = -1.0;
 }
 
 std::pair<double, double> DigitalBuffer::time_range_ns() const {

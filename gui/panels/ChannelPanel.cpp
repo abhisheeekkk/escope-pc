@@ -1,42 +1,103 @@
 #include "panels/ChannelPanel.h"
 #include "session/CaptureSession.h"
-#include <QLabel>
-#include <QGridLayout>
-#include <QScrollArea>
-#include <QVBoxLayout>
+#include <QPainter>
+#include <QMouseEvent>
+#include "theme/Theme.h"
 #include <vector>
 #include <cmath>
 
 ChannelPanel::ChannelPanel(QWidget* parent) : QWidget(parent) {
-    auto* grid = new QGridLayout(this);
-    grid->setSpacing(2);
-    grid->setContentsMargins(4, 4, 4, 4);
+    setMinimumWidth(236);
+    setMouseTracking(true);
+    setCursor(Qt::PointingHandCursor);
+    setToolTip("Click a channel to show or hide it");
+    for (int i = 0; i < 8; ++i) rows_[i].name = QString("D%1").arg(i);
+}
 
-    // Header
-    auto* h1 = new QLabel("Channel", this);
-    auto* h2 = new QLabel("Freq", this);
-    auto* h3 = new QLabel("Lvl", this);
-    h1->setStyleSheet("color:#888; font-size:10px; font-weight:bold;");
-    h2->setStyleSheet("color:#888; font-size:10px; font-weight:bold;");
-    h3->setStyleSheet("color:#888; font-size:10px; font-weight:bold;");
-    grid->addWidget(h1, 0, 0); grid->addWidget(h2, 0, 1); grid->addWidget(h3, 0, 2);
+static constexpr int kHeadH = 26, kRowH = 36;
 
-    // Colour alternates between two greens matching the waveform renderer
+int ChannelPanel::rowAt(const QPoint& p) const {
+    const int i = (p.y() - kHeadH) / kRowH;
+    return (p.y() >= kHeadH && i >= 0 && i < 8) ? i : -1;
+}
+
+void ChannelPanel::setChannelVisible(int ch, bool visible) {
+    if (ch >= 0 && ch < 8) { visible_[ch] = visible; update(); }
+}
+
+void ChannelPanel::mousePressEvent(QMouseEvent* e) {
+    const int i = rowAt(e->pos());
+    if (i >= 0) emit channelClicked(i);
+}
+
+void ChannelPanel::mouseMoveEvent(QMouseEvent* e) {
+    const int i = rowAt(e->pos());
+    if (i != hover_) { hover_ = i; update(); }
+}
+
+void ChannelPanel::leaveEvent(QEvent*) { hover_ = -1; update(); }
+
+void ChannelPanel::setRoles(const QStringList& roles) {
+    roles_ = roles;
+    update();
+}
+
+void ChannelPanel::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const int W = width(), pad = 14, head_h = kHeadH, row_h = kRowH;
+
+    // Column captions
+    p.setFont(theme::ui(8.0, QFont::DemiBold));
+    p.setPen(theme::kTextFaint);
+    p.drawText(QRect(pad + 14, 2, 90, head_h), Qt::AlignLeft | Qt::AlignVCenter, "CHANNEL");
+    p.drawText(QRect(W - pad - 140, 2, 84, head_h), Qt::AlignRight | Qt::AlignVCenter, "FREQUENCY");
+    p.drawText(QRect(W - pad - 44, 2, 44, head_h), Qt::AlignCenter, "LEVEL");
+
     for (int i = 0; i < 8; ++i) {
-        QString col = (i % 2 == 0) ? "#00E666" : "#00A676";
-        rows_[i].name  = new QLabel(this);
-        rows_[i].freq  = new QLabel("---", this);
-        rows_[i].level = new QLabel("?", this);
-        rows_[i].name ->setStyleSheet(QString("color:%1; font-size:10px; font-family:monospace;").arg(col));
-        rows_[i].freq ->setStyleSheet("color:#AAA; font-size:10px; font-family:monospace;");
-        rows_[i].level->setStyleSheet(QString("color:%1; font-size:10px; font-family:monospace; font-weight:bold;").arg(col));
-        rows_[i].level->setAlignment(Qt::AlignCenter);
-        grid->addWidget(rows_[i].name,  i+1, 0);
-        grid->addWidget(rows_[i].freq,  i+1, 1);
-        grid->addWidget(rows_[i].level, i+1, 2);
+        const int y = head_h + i * row_h;
+        const QRect row(pad - 6, y + 2, W - 2 * pad + 12, row_h - 4);
+        const QColor col = theme::channel(i);
+        p.setOpacity(visible_[i] ? 1.0 : 0.38);               // hidden channels recede
+
+        if (i == hover_ || i % 2 == 0) {                      // faint banding, brighter under the pointer
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, i == hover_ ? 20 : 7));
+            p.drawRoundedRect(row, 8, 8);
+        }
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(col);
+        p.drawRoundedRect(QRectF(pad, y + row_h / 2.0 - 8, 3, 16), 1.5, 1.5);
+
+        const QString role = i < roles_.size() ? roles_[i] : QString();
+        p.setFont(theme::ui(10.0, QFont::DemiBold));
+        p.setPen(theme::kText);
+        const QRect name_r(pad + 14, y, 44, row_h);
+        p.drawText(name_r, Qt::AlignLeft | Qt::AlignVCenter, rows_[i].name);
+        if (!role.isEmpty()) {
+            p.setFont(theme::ui(8.5, QFont::Medium));
+            p.setPen(col);
+            p.drawText(QRect(pad + 50, y, 70, row_h), Qt::AlignLeft | Qt::AlignVCenter, role);
+        }
+
+        const bool has_freq = rows_[i].freq != "N/A" && rows_[i].freq != "No signal";
+        p.setFont(theme::mono(9.0));
+        p.setPen(has_freq ? theme::kText : theme::kTextFaint);
+        p.drawText(QRect(W - pad - 150, y, 94, row_h), Qt::AlignRight | Qt::AlignVCenter, rows_[i].freq);
+
+        // Level pill
+        const QRectF pill(W - pad - 38, y + row_h / 2.0 - 10, 32, 20);
+        const bool hi = rows_[i].known && rows_[i].level;
+        p.setPen(Qt::NoPen);
+        p.setBrush(hi ? QColor(col.red(), col.green(), col.blue(), 56) : QColor(255, 255, 255, 14));
+        p.drawRoundedRect(pill, 10, 10);
+        p.setFont(theme::mono(9.0, QFont::DemiBold));
+        p.setPen(hi ? col : theme::kTextMuted);
+        p.drawText(pill, Qt::AlignCenter, rows_[i].known ? (rows_[i].level ? "1" : "0") : "N/A");
+        p.setOpacity(1.0);
     }
-    grid->setRowStretch(17, 1);
-    setMinimumWidth(160);
 }
 
 void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
@@ -48,7 +109,7 @@ void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
     (void)t0;
     for (int i = 0; i < n; ++i) {
         const auto& info = session.digital_info(i);
-        rows_[i].name->setText(QString::fromStdString(info.label));
+        rows_[i].name = QString::fromStdString(info.label);
 
         // Estimate frequency from the most recent edges only -- this panel
         // never looks further back than that, so there's no reason to copy
@@ -78,16 +139,18 @@ void ChannelPanel::updateFrom(const escope::CaptureSession& session) {
                 if (freq >= 1e6)      fs = QString::number(freq/1e6,'f',2) + " MHz";
                 else if (freq >= 1e3) fs = QString::number(freq/1e3,'f',2) + " kHz";
                 else                  fs = QString::number(freq,'f',1) + " Hz";
-                rows_[i].freq->setText(fs);
+                rows_[i].freq = fs;
             } else {
-                rows_[i].freq->setText("---");
+                rows_[i].freq = "N/A";
             }
         } else {
-            rows_[i].freq->setText(edges.empty() ? "no sig" : "---");
+            rows_[i].freq = edges.empty() ? "No signal" : "N/A";
         }
 
         // Current level
         bool lvl = session.digital_buffer().level_at(i, t1);
-        rows_[i].level->setText(lvl ? "1" : "0");
+        rows_[i].level = lvl;
+        rows_[i].known = true;
     }
+    update();
 }

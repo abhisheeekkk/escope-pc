@@ -65,18 +65,39 @@ void SessionSerializer::save_analog(const CaptureSession& session,
 
 void SessionSerializer::save_digital(const CaptureSession& session,
                                      const std::filesystem::path& dir) {
-    auto edges = session.digital_buffer().all_edges();
-    if (edges.empty()) return;
+    const auto& buf = session.digital_buffer();
+    if (buf.total_edges() == 0) return;
 
+    // Record layout (10 bytes, little endian): f64 timestamp, u8 channel, u8 level. Records are
+    // written channel by channel (each channel is already in time order), so nothing is merged or
+    // sorted, the buffer lock is only held while one channel is copied, and every write is a large
+    // block instead of three tiny ones per edge.
+    constexpr std::size_t REC = 10, CHUNK = 65536;
     std::ofstream f(dir / "digital_edges.bin", std::ios::binary);
-    uint64_t count = edges.size();
-    f.write(reinterpret_cast<const char*>(&count), sizeof(count));
-    for (const auto& e : edges) {
-        f.write(reinterpret_cast<const char*>(&e.timestamp_ns), sizeof(e.timestamp_ns));
-        f.write(reinterpret_cast<const char*>(&e.channel),      sizeof(e.channel));
-        uint8_t rising = e.rising ? 1 : 0;
-        f.write(reinterpret_cast<const char*>(&rising),         sizeof(rising));
+    std::vector<char> wbuf(8u << 20);
+    f.rdbuf()->pubsetbuf(wbuf.data(), static_cast<std::streamsize>(wbuf.size()));
+
+    uint64_t count = 0;
+    f.write(reinterpret_cast<const char*>(&count), sizeof(count));   // patched below
+
+    std::vector<char> block(CHUNK * REC);
+    for (uint8_t ch = 0; ch < buf.num_channels(); ++ch) {
+        const auto edges = buf.edges_for_channel(ch);
+        for (std::size_t i = 0; i < edges.size(); i += CHUNK) {
+            const std::size_t n = std::min(CHUNK, edges.size() - i);
+            char* p = block.data();
+            for (std::size_t k = 0; k < n; ++k, p += REC) {
+                const auto& e = edges[i + k];
+                std::memcpy(p, &e.timestamp_ns, sizeof(double));
+                p[8] = static_cast<char>(e.channel);
+                p[9] = e.rising ? 1 : 0;
+            }
+            f.write(block.data(), static_cast<std::streamsize>(n * REC));
+        }
+        count += edges.size();
     }
+    f.seekp(0);
+    f.write(reinterpret_cast<const char*>(&count), sizeof(count));
 }
 
 // ─── Load ─────────────────────────────────────────────────────────────────────
@@ -163,14 +184,34 @@ std::unique_ptr<CaptureSession> SessionSerializer::load(const std::filesystem::p
     auto dig_path = path / "digital_edges.bin";
     if (std::filesystem::exists(dig_path)) {
         std::ifstream f(dig_path, std::ios::binary);
+        std::vector<char> rbuf(8u << 20);
+        f.rdbuf()->pubsetbuf(rbuf.data(), static_cast<std::streamsize>(rbuf.size()));
         uint64_t count = 0;
         f.read(reinterpret_cast<char*>(&count), sizeof(count));
-        for (uint64_t i = 0; i < count && f.good(); ++i) {
-            double  ts; uint8_t ch; uint8_t rising;
-            f.read(reinterpret_cast<char*>(&ts),     sizeof(ts));
-            f.read(reinterpret_cast<char*>(&ch),     sizeof(ch));
-            f.read(reinterpret_cast<char*>(&rising), sizeof(rising));
-            session->digital_buffer().push_edge(ts, ch, rising != 0);
+
+        // Read big blocks and hand each one to the buffer in a single call; the old loop did three
+        // tiny reads and a lock per edge, which took minutes for a long capture.
+        constexpr std::size_t REC = 10, CHUNK = 65536;
+        std::vector<char> block(CHUNK * REC);
+        std::vector<DigitalEdge> batch;
+        batch.reserve(CHUNK);
+        uint64_t remaining = count;
+        while (remaining > 0 && f.good()) {
+            const std::size_t want = static_cast<std::size_t>(std::min<uint64_t>(remaining, CHUNK));
+            f.read(block.data(), static_cast<std::streamsize>(want * REC));
+            const std::size_t got = static_cast<std::size_t>(f.gcount()) / REC;
+            if (got == 0) break;
+            batch.clear();
+            const char* p = block.data();
+            for (std::size_t k = 0; k < got; ++k, p += REC) {
+                DigitalEdge e{};
+                std::memcpy(&e.timestamp_ns, p, sizeof(double));
+                e.channel = static_cast<uint8_t>(p[8]);
+                e.rising  = p[9] != 0;
+                batch.push_back(e);
+            }
+            session->digital_buffer().push_batch(batch.data(), batch.size());
+            remaining -= got;
         }
     }
 

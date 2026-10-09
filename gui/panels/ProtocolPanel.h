@@ -1,4 +1,5 @@
 #pragma once
+#include <QStringList>
 #include <QWidget>
 #include <QString>
 #include <QVector>
@@ -46,6 +47,8 @@ signals:
     /// Channels the chosen protocol uses (SDA and SCL, or TX / RX), so the main
     /// view can show them.
     void pinsChanged(QVector<int> channels);
+    /// Role of every channel D0..D7 for the chosen protocol (CLK, MOSI, SDA...), empty strings when unused.
+    void pinRolesChanged(QStringList roles);
 
 private:
     void fillChannelCombo(QComboBox* c, int select);
@@ -55,6 +58,7 @@ private:
     void setPinRow(QComboBox* c, const QString& label, bool visible);
 
     void emitPins();
+    void emitRoles();
     void dropAnnotations();
     bool                 live_ = false;
     bool                 annot_active_ = false;   ///< annotations are currently on the waveform

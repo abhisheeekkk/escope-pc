@@ -1,4 +1,5 @@
 #include "panels/ProtocolPanel.h"
+#include "theme/Theme.h"
 #include "session/CaptureSession.h"
 #include "decoders/uart/UartDecoder.h"
 #include "decoders/i2c/I2CDecoder.h"
@@ -34,11 +35,13 @@ QString formatTime(double ns) {
 
 ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(4, 4, 4, 4);
+    root->setContentsMargins(14, 4, 14, 14);
+    root->setSpacing(10);
 
     auto* head = new QHBoxLayout;
     title_ = new QLabel(this);
-    title_->setStyleSheet("color:#00E666; font-weight:bold;");
+    title_->setObjectName("sectionTitle");
+    title_->setStyleSheet(QString("color:%1;").arg(theme::css(theme::kAccent)));
     head->addWidget(title_, 1);
     auto* clear_btn = new QPushButton("Clear", this);
     connect(clear_btn, &QPushButton::clicked, this, &ProtocolPanel::clearDecoded);
@@ -47,7 +50,7 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     auto* copy_btn = new QPushButton("Copy", this);
     connect(copy_btn, &QPushButton::clicked, this, [this, copy_btn]() {
         QGuiApplication::clipboard()->setText(text_->toPlainText());
-        copy_btn->setText("Copied!");
+        copy_btn->setText("Copied");
         QTimer::singleShot(1200, copy_btn, [copy_btn]{ copy_btn->setText("Copy"); });
     });
     head->addWidget(copy_btn);
@@ -56,6 +59,7 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     auto* form = new QFormLayout;
     form_ = form;
     form->setContentsMargins(0, 0, 0, 0);
+    form->setVerticalSpacing(8);
     tx_ = new QComboBox(this);
     rx_ = new QComboBox(this);
     p3_ = new QComboBox(this);
@@ -63,34 +67,34 @@ ProtocolPanel::ProtocolPanel(QWidget* parent) : QWidget(parent) {
     fillChannelCombo(rx_, -1);   // none
     fillChannelCombo(p3_, -1);
     // Changing a pin invalidates the annotations; show the chosen channels right away.
-    auto pinsMoved = [this]{ refreshExclusion(); last_sig_.clear(); cache_valid_ = false; dropAnnotations(); emitPins(); };
+    auto pinsMoved = [this]{ refreshExclusion(); last_sig_.clear(); cache_valid_ = false; dropAnnotations(); emitPins(); emitRoles(); };
     for (QComboBox* c : {tx_, rx_, p3_})
         connect(c, &QComboBox::currentIndexChanged, this, pinsMoved);
     refreshExclusion();
-    form->addRow("TX pin:", tx_);
-    form->addRow("RX pin:", rx_);
-    form->addRow("MISO pin:", p3_);
+    form->addRow("TX:", tx_);
+    form->addRow("RX:", rx_);
+    form->addRow("MISO:", p3_);
     setPinRow(p3_, QString(), false);
     baud_ = new QLabel("Baud: auto", this);
-    baud_->setStyleSheet("color:#aaa;");
+    baud_->setObjectName("caption");
     form->addRow(baud_);
     root->addLayout(form);
 
     summary_ = new QLabel(this);
-    summary_->setStyleSheet("color:#888; font-size:10px;");
+    summary_->setObjectName("hint");
     root->addWidget(summary_);
 
     text_ = new QPlainTextEdit(this);
     text_->setReadOnly(true);
+    text_->setFont(theme::mono(9.5));
     text_->setLineWrapMode(QPlainTextEdit::NoWrap);   // one transaction per line, scroll sideways
     text_->setPlaceholderText("Decoded text (whole capture)");
-    text_->setStyleSheet("background:#111; color:#00E666; font-family:monospace; font-size:11px;");
     root->addWidget(text_, 1);
 
     output_ = new QPlainTextEdit(this);
     output_->setReadOnly(true);
+    output_->setFont(theme::mono(9.5));
     output_->setLineWrapMode(QPlainTextEdit::NoWrap);
-    output_->setStyleSheet("background:#111; color:#ddd; font-family:monospace; font-size:11px;");
     root->addWidget(output_, 1);
 
     setMinimumWidth(220);
@@ -142,6 +146,23 @@ void ProtocolPanel::emitPins() {
     if (!chans.isEmpty()) emit pinsChanged(chans);
 }
 
+void ProtocolPanel::emitRoles() {
+    QStringList roles;
+    for (int i = 0; i < NUM_CH; ++i) roles << QString();
+    if (!protocol_.isEmpty()) {
+        const bool i2c = (protocol_ == "I2C"), spi = (protocol_ == "SPI");
+        const QStringList names = spi ? QStringList{"CLK", "MOSI", "MISO"}
+                                : i2c ? QStringList{"SDA", "SCL"}
+                                      : QStringList{"TX", "RX"};
+        const auto pins = activePins();
+        for (std::size_t k = 0; k < pins.size() && k < static_cast<std::size_t>(names.size()); ++k) {
+            const int ch = pins[k]->currentData().toInt();
+            if (ch >= 0 && ch < NUM_CH) roles[ch] = names[static_cast<int>(k)];
+        }
+    }
+    emit pinRolesChanged(roles);
+}
+
 void ProtocolPanel::dropAnnotations() {
     if (annot_active_) { annot_active_ = false; emit annotationsCleared(); }
 }
@@ -156,9 +177,9 @@ void ProtocolPanel::setProtocol(const QString& name) {
     const bool i2c = (name == "I2C");
     const bool can = (name == "CAN");
     const bool spi = (name == "SPI");
-    setPinRow(tx_, spi ? "CLK pin:"  : i2c ? "SDA pin:" : can ? "CAN TX pin:" : "TX pin:", true);
-    setPinRow(rx_, spi ? "MOSI pin:" : i2c ? "SCL pin:" : can ? "CAN RX pin:" : "RX pin:", true);
-    setPinRow(p3_, "MISO pin:", spi);
+    setPinRow(tx_, spi ? "CLK:"  : i2c ? "SDA:" : can ? "TX:" : "TX:", true);
+    setPinRow(rx_, spi ? "MOSI:" : i2c ? "SCL:" : can ? "RX:" : "RX:", true);
+    setPinRow(p3_, "MISO:", spi);
     // Pins are left for the user to choose; start from None on every protocol switch.
     for (QComboBox* c : {tx_, rx_, p3_}) c->setCurrentIndex(0);
     refreshExclusion();
@@ -168,6 +189,7 @@ void ProtocolPanel::setProtocol(const QString& name) {
     output_->clear();
     text_->clear();
     summary_->clear();
+    emitRoles();
 }
 
 void ProtocolPanel::clearDecoded() {

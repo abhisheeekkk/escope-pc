@@ -1,4 +1,5 @@
 #include "waveform/AnnotationPainter.h"
+#include "theme/Theme.h"
 #include <QFont>
 #include <QFontMetrics>
 #include <algorithm>
@@ -11,8 +12,8 @@ void paintAnnotationLane(QPainter& p, const std::vector<escope::AnnotationItem>&
     const int   W = g.width;
     const float y = g.y, h = g.height;
 
-    QFont f("Monospace", 8, QFont::Bold);   f.setStyleHint(QFont::Monospace);
-    QFont fs("Monospace", 7);               fs.setStyleHint(QFont::Monospace);
+    QFont f  = theme::mono(8.5, QFont::Bold);
+    QFont fs = theme::mono(7.5);
     const QFontMetrics fm(f), fms(fs);
 
     auto fmt_t = [](double ns) -> QString {
