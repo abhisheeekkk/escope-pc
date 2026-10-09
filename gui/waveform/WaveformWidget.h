@@ -11,6 +11,8 @@
 #include <QColor>
 #include "theme/Theme.h"
 #include <QVariantAnimation>
+#include <QElapsedTimer>
+#include <QEasingCurve>
 
 #include "acquisition/SampleBuffer.h"
 #include "acquisition/DigitalBuffer.h"
@@ -146,7 +148,9 @@ private:
     float  pixelToVolt(float y, int ch) const;
     void   clampTimeOffset();
     /// Glide to a new zoom and position instead of jumping (about 180 ms, eased).
-    void   animateView(double time_per_div_ns, double offset_ns);
+    void   animateView(double time_per_div_ns, double offset_ns, int duration_ms = 180,
+                       QEasingCurve::Type curve = QEasingCurve::OutCubic);
+    double clampedOffset(double offset_ns, double time_per_div_ns) const;
 
     void   updateCursorVoltages(WaveformCursor& c);
 
@@ -168,12 +172,31 @@ private:
 
     // Per-frame reused buffers
     std::vector<escope::AnalogSample> snap_[2];
-    std::vector<escope::DigitalEdge>  dig_snap_;
+    // Per-channel pixel-column summaries. They are rebuilt only when the view, the width or the stored
+    // edges change, so an idle or paused view costs almost nothing per frame.
+    struct ColumnCache {
+        double   t0 = 0, t1 = 0;
+        int      width = 0;
+        uint64_t version = ~0ULL;
+        std::vector<escope::DigitalBuffer::EdgeColumn> cols;
+    };
+    ColumnCache col_cache_[8];
     std::vector<float>                wave_verts_;
 
     // Animated view changes
     QVariantAnimation* view_anim_ = nullptr;
     double anim_from_tdiv_ = 0, anim_from_off_ = 0, anim_to_tdiv_ = 0, anim_to_off_ = 0;
+
+    // Flick-to-pan: the last few pointer samples of a drag give its release velocity
+    struct DragSample { qint64 ms; int x; };
+    DragSample drag_samples_[4] = {};
+    int        drag_sample_n_ = 0;
+    QElapsedTimer drag_clock_;
+
+    // The cursor readout card fades in when it first appears
+    QVariantAnimation* card_anim_ = nullptr;
+    double card_alpha_ = 0.0;
+    bool   card_shown_ = false;
 
     // View state
     double time_offset_ns_  = 0.0;

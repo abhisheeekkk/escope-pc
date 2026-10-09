@@ -18,6 +18,7 @@ add_library(escope_core STATIC
     decoders/can/CANDecoder.cpp
     session/CaptureSession.cpp
     session/SessionSerializer.cpp
+    session/EdgeCodec.cpp
     hal/IDataSource.cpp
     hal/StmDataSource.cpp
 )

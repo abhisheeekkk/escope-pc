@@ -241,7 +241,8 @@ void StmDataSource::reader_loop(CaptureSession* session)
             // to MAX_SAMPLES, so real signals aren't distorted; it only
             // kicks in as a backstop for a burst denser than that.
             const uint32_t max_ch = std::min<uint32_t>(NUM_CHANNELS, CaptureSession::MAX_DIGITAL_CH);
-            const uint8_t  ch_mask = uint8_t((1u << max_ch) - 1);
+            // Only channels the user has chosen to record are decoded; the rest cost nothing
+            const uint8_t  ch_mask = uint8_t(((1u << max_ch) - 1) & session->digital_buffer().store_mask());
             static constexpr std::size_t MAX_EDGES_PER_BURST = MAX_SAMPLES;
 
             const uint8_t* samples = buf.data() + HDR_SIZE;
@@ -264,7 +265,8 @@ void StmDataSource::reader_loop(CaptureSession* session)
             uint8_t     prev = samples[0];
             std::size_t transition_idx = 0;
             for (uint32_t ch = 0; ch < max_ch; ch++)
-                batch.push_back({burst_t0_ns, uint8_t(ch), bool((prev >> ch) & 1), true});
+                if ((ch_mask >> ch) & 1U)
+                    batch.push_back({burst_t0_ns, uint8_t(ch), bool((prev >> ch) & 1), true});
 
             for (uint32_t i = 1; i < nsamp; i++) {
                 uint8_t cur  = samples[i];

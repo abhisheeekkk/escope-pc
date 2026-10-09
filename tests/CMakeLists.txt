@@ -9,6 +9,7 @@ add_executable(escope_tests
     core/test_SPIDecoder.cpp
     core/test_BurstFrame.cpp
     core/test_AnnotationLayout.cpp
+    core/test_SessionSerializer.cpp
 )
 
 target_link_libraries(escope_tests

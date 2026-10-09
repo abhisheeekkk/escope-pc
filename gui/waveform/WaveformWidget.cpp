@@ -71,7 +71,7 @@ WaveformWidget::WaveformWidget(QWidget* p)
     snap_[0].reserve(4*1024*1024);
     snap_[1].reserve(4*1024*1024);
 #endif
-    dig_snap_.reserve(64*1024);
+    for (auto& c : col_cache_) c.cols.reserve(4096);
     wave_verts_.reserve(MAX_WAVE_VERTS*2);
     cursors_.reserve(MAX_CURSORS);
 }
@@ -276,9 +276,6 @@ void WaveformWidget::paintGL() {
     // capture history here made every frame's cost grow with total capture
     // length, which stalls the UI once a continuous capture accumulates a
     // large number of edges (e.g. dense per-sample bursts).
-    double view_start = time_offset_ns_;
-    double view_end   = time_offset_ns_ + time_per_div_ns_ * HDIVS;
-    dig_snap_ = session_->digital_buffer().edges_in_range(view_start, view_end);
     // Gate on ch_visible_ (the toolbar "Select" checkboxes the user actually
     // toggles), not just digital_info(ch).enabled -- previously this loop
     // ignored ch_visible_ entirely, so every channel was decoded into GL
@@ -390,34 +387,25 @@ void WaveformWidget::drawDigitalChannel(std::size_t ch) {
     // Edges that land in the same pixel column are merged into one vertical bar. A dense signal
     // (an 8 MHz clock zoomed out) then costs at most a few vertices per column instead of
     // overflowing the vertex buffer, which used to cut the trace off partway across the screen.
-    int   col = -1, count = 0;
-    float first_x = 0, last_y = yp;
-    auto flush = [&]() {
-        if (count == 0) return;
-        if (count == 1) {
-            wave_verts_.insert(wave_verts_.end(), {xp, yp, first_x, yp, first_x, yp, first_x, last_y});
-            xp = first_x;
+    ColumnCache& cc = col_cache_[ch & 7];
+    const uint64_t ver = session_->digital_buffer().version();
+    if (cc.version != ver || cc.t0 != vs || cc.t1 != ve || cc.width != W) {
+        session_->digital_buffer().columns((uint8_t)ch, vs, ve, std::max(1, W), cc.cols);
+        cc.version = ver; cc.t0 = vs; cc.t1 = ve; cc.width = W;
+    }
+    for (const auto& c : cc.cols) {
+        const float x  = timeToPixel(c.t_first);
+        const float yn = c.last_rising ? hi_y : lo_y;
+        if (c.count == 1) {
+            wave_verts_.insert(wave_verts_.end(), {xp, yp, x, yp, x, yp, x, yn});
+            xp = x;
         } else {
-            const float cx = (float)col + 0.5f;
+            const float cx = std::floor(x) + 0.5f;                 // several edges in one pixel: draw a bar
             wave_verts_.insert(wave_verts_.end(), {xp, yp, cx, yp, cx, lo_y, cx, hi_y});
             xp = cx;
         }
-        yp = last_y;
-        count = 0;
-    };
-
-    for (const auto& e : dig_snap_) {
-        if (e.channel != (uint8_t)ch) continue;
-        if (e.timestamp_ns < vs) { yp = e.rising ? hi_y : lo_y; last_y = yp; xp = 0; continue; }
-        if (e.timestamp_ns > ve) break;
-        const float x = timeToPixel(e.timestamp_ns);
-        const int   c = (int)x;
-        if (count > 0 && c != col) flush();
-        if (count == 0) { col = c; first_x = x; }
-        ++count;
-        last_y = e.rising ? hi_y : lo_y;
+        yp = yn;
     }
-    flush();
     wave_verts_.insert(wave_verts_.end(), {xp, yp, (float)W, yp});
     if (wave_verts_.empty()) return;
 
@@ -629,12 +617,28 @@ void WaveformWidget::drawCursors(QPainter& p) {
 // --- Measurement panel ------------------------------------------------------
 
 void WaveformWidget::drawMeasurementPanel(QPainter& p) {
-    if (meas_ref_ < 0 || meas_target_ < 0) return;
-    if (meas_ref_ >= (int)cursors_.size() || meas_target_ >= (int)cursors_.size()) return;
+    auto hide_card = [this] { card_shown_ = false; card_alpha_ = 0.0; };
+    if (meas_ref_ < 0 || meas_target_ < 0) { hide_card(); return; }
+    if (meas_ref_ >= (int)cursors_.size() || meas_target_ >= (int)cursors_.size()) { hide_card(); return; }
     const auto& ref = cursors_[meas_ref_];
     const auto& tgt = cursors_[meas_target_];
-    if (!ref.active || !tgt.active) return;
-    if (ref.type != WaveformCursor::Type::Vertical || tgt.type != WaveformCursor::Type::Vertical) return;
+    if (!ref.active || !tgt.active) { hide_card(); return; }
+    if (ref.type != WaveformCursor::Type::Vertical || tgt.type != WaveformCursor::Type::Vertical) { hide_card(); return; }
+
+    if (!card_shown_) {                                   // first frame with two cursors: fade the card in
+        card_shown_ = true;
+        if (!card_anim_) {
+            card_anim_ = new QVariantAnimation(this);
+            card_anim_->setDuration(180);
+            card_anim_->setEasingCurve(QEasingCurve::OutCubic);
+            card_anim_->setStartValue(0.0);
+            card_anim_->setEndValue(1.0);
+            connect(card_anim_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) { card_alpha_ = v.toDouble(); update(); });
+        }
+        card_alpha_ = 0.0;
+        card_anim_->stop();
+        card_anim_->start();
+    }
 
     const double dt = std::abs(tgt.t_ns - ref.t_ns);
 
@@ -680,6 +684,7 @@ void WaveformWidget::drawMeasurementPanel(QPainter& p) {
     const QRect box(width() / 2 - box_w / 2, 12, box_w, box_h);
 
     p.save();
+    p.setOpacity(card_alpha_);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(QPen(QColor(255, 255, 255, 22), 1));
     p.setBrush(QColor(28, 28, 30, 232));
@@ -937,6 +942,7 @@ void WaveformWidget::setMeasurementPair(int ref, int target) {
 // --- Mouse ------------------------------------------------------------------
 
 void WaveformWidget::mousePressEvent(QMouseEvent* e) {
+    if (view_anim_ && view_anim_->state() == QAbstractAnimation::Running) view_anim_->stop();   // grabbing the view stops a glide
     float mx = e->position().x(), my = e->position().y();
 
     if (e->button() == Qt::LeftButton) {
@@ -972,12 +978,12 @@ void WaveformWidget::mousePressEvent(QMouseEvent* e) {
         if (hit >= 0) { removeCursor(hit); return; }
         // Right-click empty area = pan
         follow_latest_ = false;
-        dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_;
+        dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_; drag_sample_n_ = 0; drag_clock_.start();
     }
 
     if (e->button() == Qt::MiddleButton) {
         follow_latest_ = false;
-        dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_;
+        dragging_ = true; drag_start_ = e->pos(); drag_t0_ = time_offset_ns_; drag_sample_n_ = 0; drag_clock_.start();
     }
     if (e->button() == Qt::LeftButton && dragging_) {
         dragging_ = false;
@@ -1016,6 +1022,9 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent* e) {
         double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
         time_offset_ns_ = drag_t0_ + (drag_start_.x()-e->pos().x())/ppns;
         clampTimeOffset();
+        // remember the last few positions to measure the release velocity
+        if (drag_sample_n_ < 4) drag_samples_[drag_sample_n_++] = {drag_clock_.elapsed(), e->pos().x()};
+        else { for (int i = 0; i < 3; ++i) drag_samples_[i] = drag_samples_[i + 1]; drag_samples_[3] = {drag_clock_.elapsed(), e->pos().x()}; }
         update();
     }
 }
@@ -1036,6 +1045,7 @@ void WaveformWidget::mouseReleaseEvent(QMouseEvent* e) {
         update();
         return;
     }
+    drag_sample_n_ = 0;
     dragging_ = false; drag_cursor_ = -1;
 }
 
@@ -1074,12 +1084,19 @@ void WaveformWidget::wheelEvent(QWheelEvent* e) {
     const QPoint ad = e->angleDelta();
     double dt;
     if (!pd.isNull()) {
+        if (view_anim_) view_anim_->stop();   // a running glide would fight the touchpad
         const double px   = pd.x() != 0 ? pd.x() : pd.y();
         const double ppns = (double)width() / (time_per_div_ns_ * HDIVS);
         dt = -px / ppns;
     } else {
+        // A mouse wheel moves in notches: glide to the target instead of jumping a whole division
         const double units = ad.x() != 0 ? ad.x() : ad.y();
-        dt = -units / 120.0 * time_per_div_ns_;
+        const bool run = view_anim_ && view_anim_->state() == QAbstractAnimation::Running;
+        const double base_off = run ? anim_to_off_ : time_offset_ns_;
+        const double tdiv     = run ? anim_to_tdiv_ : time_per_div_ns_;
+        animateView(tdiv, base_off - units / 120.0 * tdiv, 90, QEasingCurve::OutQuad);
+        e->accept();
+        return;
     }
     time_offset_ns_ += dt;
     clampTimeOffset();
@@ -1188,13 +1205,23 @@ void WaveformWidget::zoomOutTime() {
     animateView(nt, off + cur * HDIVS / 2.0 - nt * HDIVS / 2.0);
 }
 
-void WaveformWidget::animateView(double tdiv, double offset) {
+double WaveformWidget::clampedOffset(double off, double tdiv) const {
+    double lo = 0.0, hi = 0.0;
+    if (session_) {
+        auto [t0, t1] = session_->digital_buffer().time_range_ns();
+        if (t1 > t0) { lo = t0; hi = t1; }
+    }
+    return std::clamp(off, lo, std::max(lo, hi - tdiv * HDIVS));
+}
+
+void WaveformWidget::animateView(double tdiv, double offset, int duration_ms, QEasingCurve::Type curve) {
     anim_from_tdiv_ = time_per_div_ns_;  anim_from_off_ = time_offset_ns_;
-    anim_to_tdiv_   = std::clamp(tdiv, 1.0, 1e12);  anim_to_off_ = offset;
+    anim_to_tdiv_   = std::clamp(tdiv, 1.0, 1e12);
+    anim_to_off_    = follow_latest_ ? offset : clampedOffset(offset, anim_to_tdiv_);
     if (!view_anim_) {
         view_anim_ = new QVariantAnimation(this);
-        view_anim_->setDuration(180);
-        view_anim_->setEasingCurve(QEasingCurve::OutCubic);
+        view_anim_->setStartValue(0.0);
+        view_anim_->setEndValue(1.0);
         view_anim_->setStartValue(0.0);
         view_anim_->setEndValue(1.0);
         connect(view_anim_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
@@ -1213,6 +1240,8 @@ void WaveformWidget::animateView(double tdiv, double offset) {
         });
     }
     view_anim_->stop();
+    view_anim_->setDuration(duration_ms);
+    view_anim_->setEasingCurve(curve);
     view_anim_->start();
 }
 

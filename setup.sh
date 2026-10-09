@@ -83,7 +83,7 @@ echo "  [2/4]  Configuring with CMake (Debug build)..."
 cmake \
     -B "${BUILD_DIR}" \
     -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     "${PROJECT_DIR}"
 

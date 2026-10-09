@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <mutex>
+#include <atomic>
 
 namespace escope {
 
@@ -90,6 +91,14 @@ public:
     /// Get edges within a time window [t_start_ns, t_end_ns].
     std::vector<DigitalEdge> edges_in_range(double t_start_ns, double t_end_ns) const;
 
+    /// Edges of one channel grouped by display column over [t_start_ns, t_end_ns): for every column
+    /// that has any edges, the time of its first edge, how many there are and the level after the
+    /// last one. Costs a few binary searches per column, not a pass over every edge, so a view of
+    /// the whole capture draws as quickly as a zoomed one.
+    struct EdgeColumn { double t_first; uint32_t count; bool last_rising; };
+    void columns(uint8_t channel, double t_start_ns, double t_end_ns, int ncols,
+                 std::vector<EdgeColumn>& out) const;
+
     /// Time one channel spends high inside [t_start_ns, t_end_ns]. Costs a binary search plus the
     /// edges in the range, so it is cheap enough to call every frame (used for duty cycle).
     double high_time_ns(uint8_t channel, double t_start_ns, double t_end_ns) const;
@@ -102,6 +111,20 @@ public:
     uint8_t num_channels() const noexcept { return num_channels_; }
 
     void clear();
+
+    /// Replace one channel's whole history in one step (used when a session is opened). The newest
+    /// MAX_EDGES_PER_CHANNEL edges are kept. @p edges must already be in time order.
+    void assign_channel(uint8_t channel, std::deque<DigitalEdge>&& edges);
+    /// Restore the burst boundaries and trigger of a loaded session.
+    void set_burst_ends(std::vector<double> ends);
+
+    /// Counts every change to the stored edges, so a view can tell its cached columns are still valid.
+    uint64_t version() const noexcept { return version_.load(std::memory_order_relaxed); }
+
+    /// Which channels are recorded (bit n = channel n). Edges of other channels are dropped as they
+    /// arrive, so the history budget is spent only on the channels being looked at. Defaults to all.
+    void    set_store_mask(uint8_t mask) { store_mask_.store(mask, std::memory_order_relaxed); }
+    uint8_t store_mask() const           { return store_mask_.load(std::memory_order_relaxed); }
 
     /// Remember where the newest burst triggered (or began, for an auto-triggered burst).
     /// The live view lines this up near the left edge, as an oscilloscope does.
@@ -119,6 +142,8 @@ private:
     std::vector<std::deque<DigitalEdge>> edges_;  ///< Per-channel edge lists
     std::vector<double>                  burst_ends_;
     double                               last_trigger_ns_ = -1.0;
+    std::atomic<uint8_t>                 store_mask_{0xFF};
+    std::atomic<uint64_t>                version_{0};
     mutable std::mutex                   mutex_;
 };
 

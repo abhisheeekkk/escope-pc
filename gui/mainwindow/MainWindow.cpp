@@ -10,6 +10,8 @@
 #include "hal/StmDataSource.h"
 
 #include <QApplication>
+#include <QCloseEvent>
+#include <QSettings>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QPixmap>
@@ -31,6 +33,10 @@
 #include <QDialog>
 #include <QFormLayout>
 #include <QDialogButtonBox>
+#include <QProgressBar>
+#include <QPointer>
+#include <QLocale>
+#include <chrono>
 #include <QShortcut>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -58,6 +64,18 @@ MainWindow::MainWindow(QWidget* parent)
     display_timer_->setInterval(33);
     connect(display_timer_, &QTimer::timeout, this, &MainWindow::onUpdateDisplay);
     display_timer_->start();
+
+    // Restore the previous window layout
+    QSettings st;
+    if (st.contains("window/geometry")) restoreGeometry(st.value("window/geometry").toByteArray());
+    if (st.contains("window/state"))    restoreState(st.value("window/state").toByteArray());
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    QSettings st;
+    st.setValue("window/geometry", saveGeometry());
+    st.setValue("window/state", saveState());
+    QMainWindow::closeEvent(e);
 }
 
 MainWindow::~MainWindow() {
@@ -72,33 +90,7 @@ void MainWindow::setupMenuBar() {
         const QString dir = QFileDialog::getExistingDirectory(this, "Open Session",
             QStandardPaths::writableLocation(QStandardPaths::HomeLocation),
             QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
-        if (dir.isEmpty()) return;
-
-        // Load on a worker thread so the window stays responsive, then swap the session in here
-        io_busy_ = true;
-        setStatus("Opening session\u2026");
-        const std::string path = dir.toStdString();
-        std::thread([this, path, dir] {
-            auto* raw = escope::SessionSerializer::load(path).release();
-            QMetaObject::invokeMethod(this, [this, raw, dir] {
-                std::unique_ptr<escope::CaptureSession> loaded(raw);
-                io_busy_ = false;
-                if (!loaded) {
-                    QMessageBox::warning(this, "Open Session",
-                        "The session could not be loaded from:\n" + dir);
-                    return;
-                }
-                if (source_) source_->stop();
-                session_ = std::move(loaded);
-                capturing_ = false;
-                waveform_widget_->setFollowLatest(false);
-                waveform_widget_->setSession(session_.get());
-                waveform_widget_->zoomFit();
-                act_start_->setEnabled(source_ != nullptr);
-                act_stop_->setEnabled(false);
-                setStatus("Session loaded: " + QFileInfo(dir).fileName());
-            }, Qt::QueuedConnection);
-        }).detach();
+        if (!dir.isEmpty()) openSession(dir);
     });
 
     file->addAction("&Save Session…", this, [this]{
@@ -106,18 +98,7 @@ void MainWindow::setupMenuBar() {
         const QString dir = QFileDialog::getSaveFileName(this, "Save Session",
             QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/escope_session",
             QString(), nullptr, QFileDialog::DontUseNativeDialog);
-        if (dir.isEmpty()) return;
-        io_busy_ = true;
-        setStatus("Saving session\u2026");
-        auto* sess = session_.get();
-        const std::string path = dir.toStdString();
-        std::thread([this, sess, path] {
-            escope::SessionSerializer::save(*sess, path);
-            QMetaObject::invokeMethod(this, [this, path] {
-                io_busy_ = false;
-                setStatus("Session saved: " + QFileInfo(QString::fromStdString(path)).fileName());
-            }, Qt::QueuedConnection);
-        }).detach();
+        if (!dir.isEmpty()) saveSession(dir);
     });
 
     file->addSeparator();
@@ -191,6 +172,116 @@ void MainWindow::setStatus(const QString& text) {
     if (text.startsWith("Single") || text.startsWith("Triggered")) c = theme::kOrange;
     status_label_->setText(QString("<span style='color:%1; font-size:13pt'>&#9679;</span>&nbsp; %2")
                                .arg(c.name(), text.toHtmlEscaped()));
+}
+
+void MainWindow::beginBusy(const QString& text) {
+    io_busy_ = true;
+    io_cancel_ = std::make_shared<std::atomic<bool>>(false);
+    setStatus(text);
+    busy_bar_->setValue(0);
+    busy_bar_->show();
+    busy_cancel_->show();
+}
+
+void MainWindow::setBusyProgress(double fraction) {
+    busy_bar_->setValue(static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 1000.0));
+}
+
+void MainWindow::endBusy() {
+    io_busy_ = false;
+    busy_bar_->hide();
+    busy_cancel_->hide();
+}
+
+// Opening happens on a worker thread (the file is memory-mapped and decoded on every core); this
+// thread only shows progress and, at the end, swaps the finished session in.
+void MainWindow::openSession(const QString& dir) {
+    beginBusy("Opening " + QFileInfo(dir).fileName() + "\u2026");
+    const std::string path = dir.toStdString();
+    auto cancel = io_cancel_;
+    QPointer<MainWindow> self(this);
+    std::thread([self, path, dir, cancel] {
+        escope::SessionSerializer::LoadReport rep;
+        auto last = std::chrono::steady_clock::now();
+        auto progress = [&](double f) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last > std::chrono::milliseconds(40)) {           // at most about 25 updates a second
+                last = now;
+                QMetaObject::invokeMethod(self.data(), [self, f] { if (self) self->setBusyProgress(f); },
+                                          Qt::QueuedConnection);
+            }
+            return !cancel->load();
+        };
+        auto* raw = escope::SessionSerializer::load(path, &rep, progress).release();
+        QMetaObject::invokeMethod(self.data(), [self, raw, rep, dir] {
+            std::unique_ptr<escope::CaptureSession> loaded(raw);
+            if (!self) return;
+            self->endBusy();
+            if (!loaded) {
+                if (rep.message == "Cancelled") self->setStatus("Open cancelled.");
+                else QMessageBox::warning(self, "Open Session",
+                         "The session could not be opened.\n\n" + QString::fromStdString(rep.message));
+                return;
+            }
+            if (self->source_) self->source_->stop();
+            self->session_ = std::move(loaded);
+            self->capturing_ = false;
+            self->waveform_widget_->setFollowLatest(false);
+            self->waveform_widget_->setSession(self->session_.get());
+            self->waveform_widget_->zoomFit();
+            self->act_start_->setEnabled(self->source_ != nullptr);
+            self->act_stop_->setEnabled(false);
+            self->setStatus(QString("Opened %1: %2 edges in %3 s")
+                                .arg(QFileInfo(dir).fileName())
+                                .arg(QLocale().toString(static_cast<qulonglong>(rep.edges)))
+                                .arg(rep.seconds, 0, 'f', 2));
+            if (rep.damaged_blocks > 0)
+                QMessageBox::warning(self, "Opened with problems",
+                    QString::fromStdString(rep.message) + "\n\nThe rest of the session is intact.");
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void MainWindow::saveSession(const QString& dir) {
+    beginBusy("Saving " + QFileInfo(dir).fileName() + "\u2026");
+    const std::string path = dir.toStdString();
+    auto cancel = io_cancel_;
+    auto* sess = session_.get();
+    QPointer<MainWindow> self(this);
+    std::thread([self, sess, path, dir, cancel] {
+        auto last = std::chrono::steady_clock::now();
+        auto progress = [&](double f) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last > std::chrono::milliseconds(40)) {
+                last = now;
+                QMetaObject::invokeMethod(self.data(), [self, f] { if (self) self->setBusyProgress(f); },
+                                          Qt::QueuedConnection);
+            }
+            return !cancel->load();
+        };
+        const auto rep = escope::SessionSerializer::save(*sess, path, progress);
+        QMetaObject::invokeMethod(self.data(), [self, rep, dir] {
+            if (!self) return;
+            self->endBusy();
+            if (rep.ok)
+                self->setStatus(QString("Saved %1 (%2 MB, %3 s)").arg(QFileInfo(dir).fileName())
+                                    .arg(rep.bytes / 1e6, 0, 'f', 1).arg(rep.seconds, 0, 'f', 2));
+            else if (rep.message == "Cancelled")
+                self->setStatus("Save cancelled. Nothing was changed.");
+            else
+                QMessageBox::warning(self, "Save Session",
+                    "The session could not be saved.\n\n" + QString::fromStdString(rep.message));
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+// History is kept only for the channels that are shown. Hidden channels would otherwise use up the
+// per-channel edge budget (busy ones fill it first) and shorten what a session can hold.
+void MainWindow::applyStoreMask() {
+    uint8_t mask = 0;
+    for (int i = 0; i < 8; ++i)
+        if (ch_actions_[i] && ch_actions_[i]->isChecked()) mask |= static_cast<uint8_t>(1u << i);
+    if (session_) session_->digital_buffer().set_store_mask(mask);
 }
 
 void MainWindow::showControlsSheet() {
@@ -378,6 +469,7 @@ void MainWindow::setupToolBar() {
         connect(act, &QAction::toggled, this, [this, i](bool checked) {
             if (waveform_widget_) waveform_widget_->setChannelVisible(i, checked);
             if (channel_panel_)   channel_panel_->setChannelVisible(i, checked);
+            applyStoreMask();
         });
         channel_panel_->setChannelVisible(i, i == 0);
     }
@@ -447,6 +539,7 @@ void MainWindow::setupToolBar() {
             connectSource();
             /* Start acquisition immediately on the new source */
             session_->reset();
+            applyStoreMask();
             source_->configure(*session_);
             source_->start(*session_);
             capturing_ = true;
@@ -520,7 +613,23 @@ void MainWindow::setupDockWidgets() {
 void MainWindow::setupStatusBar() {
     status_label_ = new QLabel();
     status_label_->setTextFormat(Qt::RichText);
-    statusBar()->addWidget(status_label_);
+    statusBar()->addWidget(status_label_, 1);
+
+    busy_bar_ = new QProgressBar();
+    busy_bar_->setRange(0, 1000);
+    busy_bar_->setTextVisible(false);
+    busy_bar_->setFixedSize(180, 6);
+    busy_bar_->hide();
+    busy_cancel_ = new QPushButton("Cancel");
+    busy_cancel_->setFlat(true);
+    busy_cancel_->hide();
+    connect(busy_cancel_, &QPushButton::clicked, this, [this] {
+        if (io_cancel_) io_cancel_->store(true);
+        busy_cancel_->hide();
+        setStatus("Cancelling\u2026");
+    });
+    statusBar()->addPermanentWidget(busy_bar_);
+    statusBar()->addPermanentWidget(busy_cancel_);
     setStatus("No device connected. Connect a device to start capturing.");
 }
 
@@ -542,6 +651,7 @@ void MainWindow::connectSource() {
 }
 
 void MainWindow::onStartCapture() {
+    if (io_busy_) { setStatus("Wait for the file operation to finish, or cancel it."); return; }
     if (!source_) { setStatus("No device connected. Connect a device to start capturing."); return; }
     // Run always means continuous capture until Stop, regardless of
     // whatever mode a previous SINGLE press left behind -- otherwise
@@ -552,6 +662,7 @@ void MainWindow::onStartCapture() {
     session_->trigger().set_config(cfg);
 
     session_->reset();
+    applyStoreMask();
     source_->configure(*session_);
     source_->start(*session_);
     capturing_     = true;
@@ -582,7 +693,14 @@ void MainWindow::onNewData() {}
 void MainWindow::onUpdateDisplay() {
     if (!session_) return;
     waveform_widget_->setSession(session_.get());
-    waveform_widget_->update();
+    // Repaint only when something changed (new data, a different session) plus a slow heartbeat for
+    // the overlays; an idle window then costs nothing. Interactions repaint themselves.
+    const uint64_t ver = session_->digital_buffer().version();
+    if (ver != last_version_ || session_.get() != last_session_ || display_frame_ % 15 == 0) {
+        waveform_widget_->update();
+        last_version_ = ver;
+        last_session_ = session_.get();
+    }
     ++display_frame_;
 
     // Status bar
@@ -607,6 +725,7 @@ void MainWindow::onUpdateDisplay() {
 }
 
 void MainWindow::onTriggerSingle() {
+    if (io_busy_) { setStatus("Wait for the file operation to finish, or cancel it."); return; }
     if (!source_) { setStatus("No device connected. Connect a device to start capturing."); return; }
     // SINGLE is self-contained: run continuously for a moment first --
     // arming single-shot mode immediately would usually stop after the
@@ -621,6 +740,7 @@ void MainWindow::onTriggerSingle() {
         session_->trigger().set_config(cfg);
 
         session_->reset();
+        applyStoreMask();
         source_->configure(*session_);
         source_->start(*session_);
         capturing_     = true;

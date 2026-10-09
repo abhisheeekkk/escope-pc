@@ -81,6 +81,10 @@ QString stylesheet() {
         QDialog, QMessageBox { background:%3; }
         QLabel#sectionTitle { color:%1; font-weight:600; font-size:11pt; }
         QLabel#caption { color:%2; }
+        QProgressBar { background:%5; border:0; border-radius:3px; }
+        QProgressBar::chunk { background:%7; border-radius:3px; }
+        QStatusBar QPushButton { background:transparent; color:%7; padding:2px 8px; }
+        QStatusBar QPushButton:hover { background:%5; }
         QLabel#keycap { color:%1; background:%5; border:1px solid %6; border-radius:6px; padding:3px 9px; }
         QLabel#hint { color:%13; font-size:9pt; }
     )");

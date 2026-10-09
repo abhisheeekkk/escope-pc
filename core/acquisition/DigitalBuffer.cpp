@@ -22,26 +22,44 @@ void cap_channel(std::deque<DigitalEdge>& ch) {
 } // namespace
 
 void DigitalBuffer::push_edge(double timestamp_ns, uint8_t channel, bool rising) {
-    if (channel >= num_channels_) return;
+    if (channel >= num_channels_ || !((store_mask() >> channel) & 1U)) return;
     std::lock_guard<std::mutex> lock(mutex_);
     auto& ch = edges_[channel];
     ch.push_back({timestamp_ns, channel, rising});
     cap_channel(ch);
+    version_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void DigitalBuffer::push_batch(const DigitalEdge* edges, std::size_t count) {
+    const uint8_t mask = store_mask();
     std::lock_guard<std::mutex> lock(mutex_);
     for (std::size_t i = 0; i < count; ++i) {
-        if (edges[i].channel < num_channels_) {
+        if (edges[i].channel < num_channels_ && ((mask >> edges[i].channel) & 1U)) {
             edges_[edges[i].channel].push_back(edges[i]);
         }
     }
     for (auto& ch : edges_) cap_channel(ch);
+    version_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void DigitalBuffer::mark_burst_end(double timestamp_ns) {
     std::lock_guard<std::mutex> lock(mutex_);
     burst_ends_.push_back(timestamp_ns);
+    version_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void DigitalBuffer::assign_channel(uint8_t channel, std::deque<DigitalEdge>&& edges) {
+    if (channel >= num_channels_) return;
+    cap_channel(edges);
+    std::lock_guard<std::mutex> lock(mutex_);
+    edges_[channel] = std::move(edges);
+    version_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void DigitalBuffer::set_burst_ends(std::vector<double> ends) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    burst_ends_ = std::move(ends);
+    version_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::vector<double> DigitalBuffer::burst_ends() const {
@@ -111,6 +129,24 @@ std::vector<DigitalEdge> DigitalBuffer::edges_in_range(double t_start_ns, double
     return result;
 }
 
+void DigitalBuffer::columns(uint8_t channel, double t0, double t1, int ncols,
+                            std::vector<EdgeColumn>& out) const {
+    out.clear();
+    if (channel >= num_channels_ || ncols <= 0 || t1 <= t0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& ch = edges_[channel];
+    const double step = (t1 - t0) / ncols;
+    auto less_t = [](const DigitalEdge& e, double t) { return e.timestamp_ns < t; };
+    auto it = std::lower_bound(ch.begin(), ch.end(), t0, less_t);
+    while (it != ch.end() && it->timestamp_ns < t1) {
+        const int c = std::clamp(static_cast<int>((it->timestamp_ns - t0) / step), 0, ncols - 1);
+        auto nxt = std::lower_bound(it, ch.end(), t0 + (c + 1) * step, less_t);
+        if (nxt == it) ++nxt;                                   // guard against rounding at a boundary
+        out.push_back({it->timestamp_ns, static_cast<uint32_t>(nxt - it), (nxt - 1)->rising});
+        it = nxt;
+    }
+}
+
 double DigitalBuffer::high_time_ns(uint8_t channel, double t0, double t1) const {
     if (channel >= num_channels_ || t1 <= t0) return 0.0;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -138,6 +174,7 @@ void DigitalBuffer::trim_before(double cutoff_ns) {
     }
     burst_ends_.erase(burst_ends_.begin(),
         std::lower_bound(burst_ends_.begin(), burst_ends_.end(), cutoff_ns));
+    version_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::size_t DigitalBuffer::total_edges() const {
@@ -168,6 +205,7 @@ void DigitalBuffer::clear() {
     for (auto& ch : edges_) ch.clear();
     burst_ends_.clear();
     last_trigger_ns_ = -1.0;
+    version_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::pair<double, double> DigitalBuffer::time_range_ns() const {

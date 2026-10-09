@@ -82,20 +82,22 @@ void ChannelPanel::paintEvent(QPaintEvent*) {
             p.drawText(QRect(pad + 50, y, 70, row_h), Qt::AlignLeft | Qt::AlignVCenter, role);
         }
 
-        const bool has_freq = rows_[i].freq != "N/A" && rows_[i].freq != "No signal";
+        // A hidden channel is not recorded, so its numbers would be stale
+        const QString freq_text = visible_[i] ? rows_[i].freq : QString("Not recorded");
+        const bool has_freq = visible_[i] && rows_[i].freq != "N/A" && rows_[i].freq != "No signal";
         p.setFont(theme::mono(9.0));
         p.setPen(has_freq ? theme::kText : theme::kTextFaint);
-        p.drawText(QRect(W - pad - 150, y, 94, row_h), Qt::AlignRight | Qt::AlignVCenter, rows_[i].freq);
+        p.drawText(QRect(W - pad - 150, y, 94, row_h), Qt::AlignRight | Qt::AlignVCenter, freq_text);
 
         // Level pill
         const QRectF pill(W - pad - 38, y + row_h / 2.0 - 10, 32, 20);
-        const bool hi = rows_[i].known && rows_[i].level;
+        const bool hi = visible_[i] && rows_[i].known && rows_[i].level;
         p.setPen(Qt::NoPen);
         p.setBrush(hi ? QColor(col.red(), col.green(), col.blue(), 56) : QColor(255, 255, 255, 14));
         p.drawRoundedRect(pill, 10, 10);
         p.setFont(theme::mono(9.0, QFont::DemiBold));
         p.setPen(hi ? col : theme::kTextMuted);
-        p.drawText(pill, Qt::AlignCenter, rows_[i].known ? (rows_[i].level ? "1" : "0") : "N/A");
+        p.drawText(pill, Qt::AlignCenter, !visible_[i] ? "Off" : rows_[i].known ? (rows_[i].level ? "1" : "0") : "N/A");
         p.setOpacity(1.0);
     }
 }
