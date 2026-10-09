@@ -106,6 +106,20 @@ void ProtocolPanel::fillChannelCombo(QComboBox* c, int select) {
     c->setCurrentIndex(select + 1);
 }
 
+ProtocolPanel::PinSetup ProtocolPanel::pinSetup() const {
+    PinSetup s;
+    if (protocol_.isEmpty()) return s;
+    auto ch = [](const QComboBox* b) { return b->currentData().toInt(); };
+    auto add = [&](const char* role, int c) { if (c >= 0) s.channels.push_back({role, static_cast<uint8_t>(c)}); };
+    bool ok = false;
+    if (protocol_ == "I2C")      { add("SDA", ch(tx_)); add("SCL", ch(rx_)); ok = ch(tx_) >= 0 && ch(rx_) >= 0; }
+    else if (protocol_ == "SPI") { add("CLK", ch(tx_)); add("MOSI", ch(rx_)); add("MISO", ch(p3_)); ok = ch(tx_) >= 0 && (ch(rx_) >= 0 || ch(p3_) >= 0); }
+    else if (protocol_ == "CAN") { add("RX", ch(rx_) >= 0 ? ch(rx_) : ch(tx_)); ok = !s.channels.empty(); }
+    else                         { add("TX", ch(tx_)); add("RX", ch(rx_)); ok = !s.channels.empty(); }
+    if (ok) s.protocol = protocol_; else s.channels.clear();
+    return s;
+}
+
 std::vector<QComboBox*> ProtocolPanel::activePins() const {
     if (protocol_ == "SPI") return {tx_, rx_, p3_};
     return {tx_, rx_};

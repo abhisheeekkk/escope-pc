@@ -12,6 +12,8 @@ qt_add_executable(embeddedscope
     panels/ChannelPanel.cpp
     panels/ChannelPanel.h
     panels/FrameListWidget.cpp
+    panels/TriggerDialog.cpp
+    panels/TriggerDialog.h
     panels/FrameListWidget.h
     panels/ProtocolPanel.cpp
     panels/ProtocolPanel.h

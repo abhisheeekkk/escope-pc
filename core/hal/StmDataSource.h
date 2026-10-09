@@ -29,6 +29,7 @@ public:
     void set_data_callback(DataCallback cb)       override { data_cb_    = std::move(cb); }
     void set_error_callback(ErrorCallback cb)     override { error_cb_   = std::move(cb); }
     void set_trigger_callback(TriggerCallback cb) override { trigger_cb_ = std::move(cb); }
+    void set_protocol_trigger(std::shared_ptr<ProtocolTrigger> t) override { ptrig_ = std::move(t); }
 
 private:
     void reader_loop(CaptureSession* session);
@@ -44,6 +45,7 @@ private:
     DataCallback      data_cb_;
     ErrorCallback     error_cb_;
     TriggerCallback   trigger_cb_;
+    std::shared_ptr<ProtocolTrigger> ptrig_;
 };
 
 } // namespace escope

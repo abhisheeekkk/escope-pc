@@ -445,6 +445,25 @@ void WaveformWidget::drawOverlay() {
 
     if (!session_) return;
 
+    if (trig_on_) {                                         // where the protocol trigger fired
+        const float x = timeToPixel(trig_t_);
+        if (x > -40 && x < W + 40) {
+            QColor line = theme::kOrange; line.setAlpha(int(200 * trig_alpha_));
+            p.setPen(QPen(line, 1.5, Qt::DashLine));
+            p.drawLine(QPointF(x, 36), QPointF(x, H - 26));
+            // The chip drops in from above while the line fades up
+            const QString txt = "TRIGGER";
+            p.setFont(theme::ui(8.5, QFont::DemiBold));
+            const QRectF chip(x - 34, 12 + 10 * (1.0 - trig_alpha_), 68, 20);
+            QColor bg = theme::kOrange; bg.setAlpha(int(235 * trig_alpha_));
+            p.setPen(Qt::NoPen);
+            p.setBrush(bg);
+            p.drawRoundedRect(chip, 10, 10);
+            QColor fg(30, 20, 0); fg.setAlpha(int(255 * trig_alpha_));
+            p.setPen(fg);
+            p.drawText(chip, Qt::AlignCenter, txt);
+        }
+    }
     if (hl_on_) {                                           // the frame picked in the protocol list
         const float x0 = timeToPixel(hl_t0_), x1 = std::max(timeToPixel(hl_t1_), x0 + 2.0f);
         if (x1 > 0 && x0 < W) {
@@ -736,6 +755,7 @@ void WaveformWidget::setAnnotations(int channel,
 }
 
 void WaveformWidget::clearAnnotations() {
+    // (annotations only; the trigger marker belongs to the capture)
     lanes_.clear();
     hit_boxes_.clear();
     update();
@@ -1163,6 +1183,30 @@ void WaveformWidget::fadeHighlight(double to) {
     hl_anim_->setStartValue(hl_alpha_);
     hl_anim_->setEndValue(to);
     hl_anim_->start();
+}
+
+void WaveformWidget::clearTriggerMark() {
+    if (trig_anim_) trig_anim_->stop();
+    trig_on_ = false; trig_alpha_ = 0.0;
+    update();
+}
+
+void WaveformWidget::showTriggerAt(double t_ns) {
+    follow_latest_ = false;
+    trig_t_ = t_ns; trig_on_ = true;
+    if (!trig_anim_) {                                    // the marker eases in with a short pulse
+        trig_anim_ = new QVariantAnimation(this);
+        trig_anim_->setDuration(520);
+        trig_anim_->setStartValue(0.0);
+        trig_anim_->setEndValue(1.0);
+        trig_anim_->setEasingCurve(QEasingCurve::OutCubic);
+        connect(trig_anim_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) { trig_alpha_ = v.toDouble(); update(); });
+    }
+    trig_alpha_ = 0.0;
+    trig_anim_->stop();
+    trig_anim_->start();
+    const double view = time_per_div_ns_ * HDIVS;
+    animateView(time_per_div_ns_, t_ns - view * 0.15, 350, QEasingCurve::InOutCubic);
 }
 
 void WaveformWidget::clearHighlight() { if (hl_on_) fadeHighlight(0.0); }

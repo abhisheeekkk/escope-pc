@@ -1,4 +1,5 @@
 #include "hal/StmDataSource.h"
+#include "acquisition/ProtocolTrigger.h"
 #include "hal/BurstFrame.h"
 #include "session/CaptureSession.h"
 #include <fcntl.h>
@@ -84,8 +85,20 @@ SourceStatus StmDataSource::configure(const CaptureSession& session)
     }
 
     // Auto = capture anyway after 500 ms (units of 10 ms); Normal/Single = wait for a real trigger.
-    const uint8_t auto_10ms = (tc.mode == TriggerMode::Auto) ? 50 : 0;
-    uint8_t pkt[8] = {0xC7, 0x01, mode, ch, 0, pre, auto_10ms, 0};
+    uint8_t auto_10ms = (tc.mode == TriggerMode::Auto) ? 50 : 0;
+
+    // A protocol trigger: the device starts a window on every frame start of the bus and the host
+    // looks for the frame in each one. Windows without it are shown as a live view; the first one
+    // that has it is kept and the capture stops.
+    uint8_t pre_segs = pre;
+    if (ptrig_ && ptrig_->enabled()) {
+        if (auto edge = ptrig_->hardware_edge()) {
+            mode = edge->mode; ch = edge->channel;
+            auto_10ms = 50;          // like Auto on a scope: keep the screen updating even if the bus is quiet
+            pre_segs = 2;
+        }
+    }
+    uint8_t pkt[8] = {0xC7, 0x01, mode, ch, 0, pre_segs, auto_10ms, 0};
     for (int i = 0; i < 7; i++) pkt[7] ^= pkt[i];
     send_command(pkt);
 
@@ -132,6 +145,8 @@ SourceStatus StmDataSource::start(CaptureSession& session)
 {
     if (fd_ < 0)  return SourceStatus::NotConnected;
     if (running_) return SourceStatus::OK;
+    if (worker_.joinable()) worker_.join();          // a reader that stopped itself (protocol trigger hit)
+    if (fd_ >= 0) tcflush(fd_, TCIFLUSH);            // bursts that arrived while stopped are stale
     running_ = true;
     worker_  = std::thread(&StmDataSource::reader_loop, this, &session);
     return SourceStatus::OK;
@@ -242,7 +257,8 @@ void StmDataSource::reader_loop(CaptureSession* session)
             // kicks in as a backstop for a burst denser than that.
             const uint32_t max_ch = std::min<uint32_t>(NUM_CHANNELS, CaptureSession::MAX_DIGITAL_CH);
             // Only channels the user has chosen to record are decoded; the rest cost nothing
-            const uint8_t  ch_mask = uint8_t(((1u << max_ch) - 1) & session->digital_buffer().store_mask());
+            const uint8_t  proto_mask = (ptrig_ && ptrig_->enabled()) ? ptrig_->required_mask() : uint8_t(0);
+            const uint8_t  ch_mask = uint8_t(((1u << max_ch) - 1) & (session->digital_buffer().store_mask() | proto_mask));
             static constexpr std::size_t MAX_EDGES_PER_BURST = MAX_SAMPLES;
 
             const uint8_t* samples = buf.data() + HDR_SIZE;
@@ -282,18 +298,35 @@ void StmDataSource::reader_loop(CaptureSession* session)
                     prev = cur;
                 }
 
-                if (i == trig && trigger_cb_ && !(flags & 0x1)) {
-                    TriggerEvent evt;
-                    evt.timestamp_ns = burst_t0_ns + double(trig) * ns_per_sample;
-                    evt.source       = TriggerSource::Digital0;
-                    evt.condition    = TriggerCondition::RisingEdge;
-                    trigger_cb_(evt);
+            }
+
+            // Trigger time: the device's edge, or with a protocol trigger the start of the frame found
+            double trigger_ns = (flags & 0x1) ? burst_t0_ns : burst_t0_ns + double(trig) * ns_per_sample;
+            bool   fired      = trigger_cb_ && !(flags & 0x1) && trig >= 1 && trig < nsamp;
+            bool   proto_hit  = false;
+            if (ptrig_ && ptrig_->enabled()) {
+                fired = false;                                  // only the frame we wait for counts as a trigger
+                if (auto hit = ptrig_->evaluate(batch.data(), batch.size())) {
+                    trigger_ns = *hit;
+                    proto_hit  = true;
+                    fired      = bool(trigger_cb_);
                 }
             }
             session->digital_buffer().push_batch(batch.data(), batch.size());
             session->digital_buffer().mark_burst_end(burst_t0_ns + double(nsamp) * ns_per_sample);
-            session->digital_buffer().mark_trigger(
-                (flags & 0x1) ? burst_t0_ns : burst_t0_ns + double(trig) * ns_per_sample);
+            session->digital_buffer().mark_trigger(trigger_ns);
+            if (fired) {
+                TriggerEvent evt;
+                evt.timestamp_ns = trigger_ns;
+                evt.source       = TriggerSource::Digital0;
+                evt.condition    = TriggerCondition::RisingEdge;
+                trigger_cb_(evt);
+            }
+            if (proto_hit) {                                    // the window we waited for: keep it and stop here
+                if (data_cb_) data_cb_();
+                running_ = false;
+                break;
+            }
 
             buf.erase(buf.begin(), buf.begin() + frame_len);
 

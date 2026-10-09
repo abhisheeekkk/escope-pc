@@ -2,6 +2,8 @@
 #include "waveform/WaveformWidget.h"
 #include "panels/ChannelPanel.h"
 #include "panels/ProtocolPanel.h"
+#include "panels/TriggerDialog.h"
+#include "theme/Motion.h"
 #include "theme/Theme.h"
 
 #include "session/CaptureSession.h"
@@ -54,6 +56,7 @@ MainWindow::MainWindow(QWidget* parent)
     waveform_widget_ = new WaveformWidget(this);
     setCentralWidget(waveform_widget_);
 
+    proto_trigger_ = std::make_shared<escope::ProtocolTrigger>();
     setupDockWidgets();
     setupMenuBar();
     setupToolBar();
@@ -165,11 +168,41 @@ void MainWindow::setupMenuBar() {
 }
 
 void MainWindow::setStatus(const QString& text) {
+    status_text_ = text;
+    // While a protocol trigger waits for its frame the dot breathes, so it is clear the scope is armed
+    const bool waiting = text.startsWith("Waiting for");
+    if (waiting && !dot_pulse_) {
+        dot_pulse_ = new QVariantAnimation(this);
+        dot_pulse_->setDuration(1500);
+        dot_pulse_->setLoopCount(-1);
+        dot_pulse_->setKeyValueAt(0.0, 1.0);
+        dot_pulse_->setKeyValueAt(0.5, 0.25);
+        dot_pulse_->setKeyValueAt(1.0, 1.0);
+        dot_pulse_->setEasingCurve(QEasingCurve::InOutSine);
+        connect(dot_pulse_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
+            dot_alpha_ = v.toDouble();
+            renderStatus();
+        });
+    }
+    if (dot_pulse_) {
+        if (waiting) { if (dot_pulse_->state() != QAbstractAnimation::Running) dot_pulse_->start(); }
+        else if (dot_pulse_->state() == QAbstractAnimation::Running) { dot_pulse_->stop(); dot_alpha_ = 1.0; }
+    }
+    renderStatus();
+}
+
+void MainWindow::renderStatus() {
     // The dot shows the state at a glance: green while capturing, amber when a trigger is armed
     // or has fired, grey otherwise.
+    const QString& text = status_text_;
     QColor c = theme::kTextFaint;
     if (capturing_) c = theme::kGreen;
-    if (text.startsWith("Single") || text.startsWith("Triggered")) c = theme::kOrange;
+    if (text.startsWith("Single") || text.startsWith("Triggered") || text.startsWith("Waiting for")) c = theme::kOrange;
+    // Rich text has no alpha colours, so fade by blending towards the bar's own background
+    const double a = std::clamp(dot_alpha_, 0.0, 1.0);
+    const QColor bg = theme::kWindow;
+    c = QColor::fromRgbF(c.redF() * a + bg.redF() * (1 - a), c.greenF() * a + bg.greenF() * (1 - a),
+                         c.blueF() * a + bg.blueF() * (1 - a));
     status_label_->setText(QString("<span style='color:%1; font-size:13pt'>&#9679;</span>&nbsp; %2")
                                .arg(c.name(), text.toHtmlEscaped()));
 }
@@ -284,8 +317,34 @@ void MainWindow::applyStoreMask() {
     if (session_) session_->digital_buffer().set_store_mask(mask);
 }
 
+void MainWindow::showTriggerDialog() {
+    if (!trigger_dlg_) {
+        trigger_dlg_ = new TriggerDialog(this);
+        connect(trigger_dlg_, &TriggerDialog::armRequested, this,
+                [this](escope::ProtocolTriggerConfig cfg) { applyProtocolTrigger(cfg); });
+        connect(trigger_dlg_, &TriggerDialog::disarmRequested, this,
+                [this] { applyProtocolTrigger({}); });
+    }
+    trigger_dlg_->present(protocol_panel_->pinSetup(), proto_trigger_->config());
+    trigger_dlg_->show();
+    trigger_dlg_->raise();
+    trigger_dlg_->activateWindow();
+}
+
+void MainWindow::applyProtocolTrigger(const escope::ProtocolTriggerConfig& cfg, bool announce) {
+    proto_trigger_->set_config(cfg);
+    const bool on = proto_trigger_->enabled();
+    act_ptrig_->setChecked(on);
+    last_trig_status_.clear();
+    if (source_) source_->configure(*session_);      // the device switches to the bus start edge (or back)
+    if (trigger_dlg_) trigger_dlg_->hide();
+    if (announce)
+        setStatus(on ? QString("Protocol trigger armed: %1").arg(QString::fromStdString(cfg.describe()))
+                     : "Protocol trigger off");
+}
+
 void MainWindow::showControlsSheet() {
-    if (controls_dlg_) { controls_dlg_->show(); controls_dlg_->raise(); controls_dlg_->activateWindow(); return; }
+    if (controls_dlg_) { controls_dlg_->show(); controls_dlg_->raise(); controls_dlg_->activateWindow(); motion::fadeIn(controls_dlg_, 160); return; }
     controls_dlg_ = new QDialog(this);
     controls_dlg_->setWindowTitle("Controls");
     controls_dlg_->setModal(false);                      // never blocks the main window
@@ -327,6 +386,7 @@ void MainWindow::showControlsSheet() {
         }
     }
     controls_dlg_->show();
+    motion::fadeIn(controls_dlg_, 200);
 }
 
 void MainWindow::setupToolBar() {
@@ -340,6 +400,9 @@ void MainWindow::setupToolBar() {
     act_single_ = tb->addAction("Single");
     act_auto_->setToolTip("Auto: scale the time base to the signal");
     act_single_->setToolTip("Single: capture one triggered burst, then stop");
+    act_ptrig_ = tb->addAction("Trigger");
+    act_ptrig_->setCheckable(true);
+    act_ptrig_->setToolTip("Protocol trigger: capture until a given I2C address, UART byte, CAN id or SPI word appears, then stop on it");
     tb->addSeparator();
     act_start_  = tb->addAction(QString::fromUtf8("\u25B6  Run"));
     act_stop_   = tb->addAction(QString::fromUtf8("\u25A0  Stop"));
@@ -361,6 +424,10 @@ void MainWindow::setupToolBar() {
     connect(act_stop_,   &QAction::triggered, this, &MainWindow::onStopCapture);
     connect(act_single_, &QAction::triggered, this, &MainWindow::onTriggerSingle);
     connect(act_auto_,   &QAction::triggered, this, &MainWindow::onTriggerAuto);
+    connect(act_ptrig_,  &QAction::triggered, this, [this] {
+        act_ptrig_->setChecked(proto_trigger_ && proto_trigger_->enabled());   // lit only while armed
+        showTriggerDialog();
+    });
 
     /* ---- Time/div dropdown ---- */
     tb->addSeparator();
@@ -510,7 +577,9 @@ void MainWindow::setupToolBar() {
     proto_off->setChecked(true);
     auto selectProtocol = [this, proto_btn](const QString& name) {
         protocol_panel_->setProtocol(name);
+        const bool was_hidden = protocol_dock_->isHidden();
         protocol_dock_->setVisible(!name.isEmpty());
+        if (was_hidden && !name.isEmpty()) motion::fadeIn(protocol_panel_, 240);
         proto_btn->setText(name.isEmpty() ? "Protocol" : "Protocol: " + name);
     };
     connect(proto_off,  &QAction::triggered, this, [selectProtocol]{ selectProtocol({}); });
@@ -606,6 +675,15 @@ void MainWindow::setupDockWidgets() {
     connect(protocol_panel_, &ProtocolPanel::frameDeselected, this,
         [this] { waveform_widget_->clearHighlight(); });
     connect(protocol_panel_, &ProtocolPanel::pinRolesChanged, channel_panel_, &ChannelPanel::setRoles);
+    connect(protocol_panel_, &ProtocolPanel::pinRolesChanged, this, [this](QStringList) {
+        if (!proto_trigger_ || !proto_trigger_->enabled()) return;
+        const auto cfg = proto_trigger_->config();
+        const auto now = protocol_panel_->pinSetup();
+        bool same = now.protocol.toStdString() == cfg.protocol && now.channels.size() == cfg.channels.size();
+        for (std::size_t i = 0; same && i < now.channels.size(); ++i)
+            same = now.channels[i].role == cfg.channels[i].role && now.channels[i].channel == cfg.channels[i].channel;
+        if (!same) { applyProtocolTrigger({}, false); setStatus("Protocol trigger turned off because the protocol pins changed."); }
+    });
     connect(protocol_panel_, &ProtocolPanel::pinsChanged, this,
         [this](QVector<int> chans) {
             for (int ch : chans)
@@ -641,12 +719,22 @@ void MainWindow::connectSource() {
     source_->set_data_callback([this]{
         QMetaObject::invokeMethod(this, &MainWindow::onNewData, Qt::QueuedConnection);
     });
+    source_->set_protocol_trigger(proto_trigger_);
     source_->set_trigger_callback([this](const escope::TriggerEvent& evt){
-        Q_UNUSED(evt);
-        QMetaObject::invokeMethod(this, [this]{
-            bool single = session_->trigger().config().mode == escope::TriggerMode::Single;
-            setStatus(single ? "Triggered. Single capture complete."
-                                           : "Triggered");
+        const double t_ns = evt.timestamp_ns;
+        QMetaObject::invokeMethod(this, [this, t_ns]{
+            const bool proto = proto_trigger_ && proto_trigger_->enabled();
+            const bool single = session_->trigger().config().mode == escope::TriggerMode::Single;
+            if (proto) {
+                // The frame was found: the capture is kept as it is and stops, like a single shot
+                if (!capturing_) return;
+                const QString what = QString::fromStdString(proto_trigger_->config().describe());
+                onStopCapture();
+                waveform_widget_->showTriggerAt(t_ns);
+                setStatus(QString("Triggered on %1. Capture stopped.").arg(what));
+                return;
+            }
+            setStatus(single ? "Triggered. Single capture complete." : "Triggered");
             // Single mode: capture exactly one triggered burst, then stop.
             if (single && capturing_) onStopCapture();
         }, Qt::QueuedConnection);
@@ -666,6 +754,8 @@ void MainWindow::onStartCapture() {
     session_->trigger().set_config(cfg);
 
     session_->reset();
+    proto_trigger_->reset_counts();
+    last_trig_status_.clear();
     applyStoreMask();
     source_->configure(*session_);
     source_->start(*session_);
@@ -707,8 +797,19 @@ void MainWindow::onUpdateDisplay() {
     }
     ++display_frame_;
 
+    // Protocol trigger progress, once or twice a second and only when the text changes
+    if (capturing_ && proto_trigger_ && proto_trigger_->enabled() && display_frame_ % 10 == 0) {
+        const QString what = QString::fromStdString(proto_trigger_->config().describe());
+        const auto m = proto_trigger_->matched(), r = proto_trigger_->rejected();
+        Q_UNUSED(m);
+        QString t = QString("Waiting for %1 (%2 windows checked)").arg(what).arg(r);
+        if (!waveform_widget_->followLatest()) t += ". View paused, press L to follow";
+        if (t != last_trig_status_) { last_trig_status_ = t; setStatus(t); }
+    }
+
     // Status bar
-    if (capturing_ && display_frame_ % 10 == 0) {
+    const bool ptrig_on = proto_trigger_ && proto_trigger_->enabled();
+    if (capturing_ && !ptrig_on && display_frame_ % 10 == 0) {
         if (waveform_widget_->followLatest())
             setStatus("Capturing: 8 channels, 48 MS/s (live)");
         else

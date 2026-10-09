@@ -91,7 +91,7 @@ public:
     void setFollowLatest(bool f)   { follow_latest_ = f; update(); }
     bool followLatest()    const   { return follow_latest_; }
     void setTimePerDiv(double ns);
-    void resetCaptureTime()        { capture_start_ms_ = QDateTime::currentMSecsSinceEpoch(); time_offset_ns_ = 0; follow_latest_ = true; }
+    void resetCaptureTime()        { clearTriggerMark(); capture_start_ms_ = QDateTime::currentMSecsSinceEpoch(); time_offset_ns_ = 0; follow_latest_ = true; }
     void setChannelVisible(int ch, bool v) { if(ch>=0&&ch<8){ch_visible_[ch]=v; update();} }
     bool channelVisible(int ch)    const   { return (ch>=0&&ch<8) ? ch_visible_[ch] : false; }
 
@@ -114,6 +114,9 @@ public:
     /// with a band, so a frame picked in the protocol list is easy to find.
     void revealRange(double t0_ns, double t1_ns);
     void clearHighlight();
+    /// Show the moment a trigger fired: the view stops following and glides so @p t_ns sits near the left.
+    void showTriggerAt(double t_ns);
+    void clearTriggerMark();
 
 signals:
     void cursorsChanged();
@@ -194,6 +197,9 @@ private:
 
     double hl_t0_ = 0, hl_t1_ = 0;
     bool   hl_on_ = false;
+    double trig_t_ = 0, trig_alpha_ = 0.0;
+    bool   trig_on_ = false;
+    QVariantAnimation* trig_anim_ = nullptr;
     double hl_alpha_ = 0.0;
     QVariantAnimation* hl_anim_ = nullptr;
     void fadeHighlight(double to);

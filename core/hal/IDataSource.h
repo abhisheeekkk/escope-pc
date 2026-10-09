@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 
 #include "session/CaptureSession.h"
 #include <functional>
@@ -6,6 +7,8 @@
 #include <vector>
 
 namespace escope {
+
+class ProtocolTrigger;
 
 /// Device information returned by enumeration.
 struct DeviceInfo {
@@ -78,6 +81,10 @@ public:
     /// Called when a trigger fires.
     using TriggerCallback = std::function<void(const TriggerEvent&)>;
     virtual void set_trigger_callback(TriggerCallback cb) = 0;
+
+    /// Keep only the bursts that hold a given protocol frame (see ProtocolTrigger). Sources that
+    /// cannot filter ignore it.
+    virtual void set_protocol_trigger(std::shared_ptr<ProtocolTrigger>) {}
 
     // ── Info ──────────────────────────────────────────────────────────────────
     virtual std::string name() const = 0;

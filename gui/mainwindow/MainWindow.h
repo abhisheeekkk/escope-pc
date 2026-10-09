@@ -2,8 +2,10 @@
 #include <atomic>
 
 #include <QMainWindow>
+#include <QVariantAnimation>
 #include <QCloseEvent>
 #include <memory>
+#include "acquisition/ProtocolTrigger.h"
 
 class QAction;
 class QComboBox;
@@ -23,6 +25,7 @@ namespace escope {
 class WaveformWidget;
 class ChannelPanel;
 class ProtocolPanel;
+class TriggerDialog;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -50,6 +53,8 @@ private:
     void connectSource();
     void setStatus(const QString& text);   ///< status bar message with a state dot
     void showControlsSheet();
+    void showTriggerDialog();
+    void applyProtocolTrigger(const escope::ProtocolTriggerConfig& cfg, bool announce = true);
     void applyStoreMask();   ///< record only the channels that are shown
 
     // Background file work: a thin progress bar with a cancel button in the status bar
@@ -73,6 +78,14 @@ private:
     QAction*           act_stop_         = nullptr;
     QAction*           act_single_       = nullptr;
     QAction*           act_auto_         = nullptr;
+    QAction*           act_ptrig_        = nullptr;   ///< protocol trigger; lit while armed
+    TriggerDialog*     trigger_dlg_      = nullptr;
+    std::shared_ptr<escope::ProtocolTrigger> proto_trigger_;
+    QString            last_trig_status_;
+    QString            status_text_;            ///< what the status bar says now
+    QVariantAnimation* dot_pulse_ = nullptr;    ///< breathing dot while a trigger waits
+    double             dot_alpha_ = 1.0;
+    void               renderStatus();
 
     QAction*           ch_actions_[8]    = {};   ///< the toolbar Select menu entries D0-D7
     QLabel*            status_label_     = nullptr;

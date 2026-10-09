@@ -26,6 +26,15 @@ public:
     void setProtocol(const QString& name);
     bool active() const { return !protocol_.isEmpty(); }
 
+    /// The chosen protocol and the channel of each pin, in the roles the decoder expects. Empty
+    /// protocol when none is selected or the pins it needs are not chosen yet.
+    struct PinSetup {
+        QString protocol;
+        std::vector<escope::DecoderChannelMap> channels;
+        bool complete() const { return !protocol.isEmpty() && !channels.empty(); }
+    };
+    PinSetup pinSetup() const;
+
     /// Re-decode the frames inside the waveform's visible window.
     void updateFrom(const escope::CaptureSession& session,
                     double view_t0_ns, double view_t1_ns);

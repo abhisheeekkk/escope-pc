@@ -11,6 +11,7 @@ add_executable(escope_tests
     core/test_AnnotationLayout.cpp
     core/test_SessionSerializer.cpp
     core/test_DecoderFixtures.cpp
+    core/test_ProtocolTrigger.cpp
 )
 
 target_link_libraries(escope_tests

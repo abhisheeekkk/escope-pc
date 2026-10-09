@@ -8,6 +8,7 @@ add_library(escope_core STATIC
     acquisition/SampleBuffer.cpp
     acquisition/DigitalBuffer.cpp
     acquisition/TriggerEngine.cpp
+    acquisition/ProtocolTrigger.cpp
     analysis/Measurements.cpp
     analysis/FFT.cpp
     decoders/base/DecoderRegistry.cpp

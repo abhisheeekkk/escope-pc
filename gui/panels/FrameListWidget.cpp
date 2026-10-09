@@ -1,5 +1,6 @@
 #include "panels/FrameListWidget.h"
 #include "theme/Theme.h"
+#include "theme/Motion.h"
 
 #include <QAbstractTableModel>
 #include <QHBoxLayout>
@@ -213,9 +214,18 @@ void FrameListWidget::rebuild(bool follow_tail, bool filter_changed) {
         while (lo < hi) { int m = (lo + hi) / 2; if (model_->at(m)->start_ns < t) lo = m + 1; else hi = m; }
         return std::min(lo, std::max(0, model_->rowCount() - 1));
     };
+    // After a search the list glides to its place instead of jumping
+    auto glide_to = [this](int row, QAbstractItemView::ScrollHint hint) {
+        QScrollBar* bar = table_->verticalScrollBar();
+        const int from = bar->value();
+        table_->scrollTo(model_->index(row, 0), hint);
+        const int to = bar->value();
+        bar->setValue(from);
+        if (from != to) motion::scrollTo(bar, to, 220);
+    };
     if (model_->rowCount() > 0) {
-        if (pick_row >= 0 && filter_changed)  table_->scrollTo(model_->index(pick_row, 0), QAbstractItemView::PositionAtCenter);
-        else if (back_to >= 0)                table_->scrollTo(model_->index(row_at(back_to), 0), QAbstractItemView::PositionAtTop);
+        if (pick_row >= 0 && filter_changed)  glide_to(pick_row, QAbstractItemView::PositionAtCenter);
+        else if (back_to >= 0)                glide_to(row_at(back_to), QAbstractItemView::PositionAtTop);
         else if (follow_tail || at_end)       table_->scrollToBottom();
         else if (top_t >= 0)                  table_->scrollTo(model_->index(row_at(top_t), 0), QAbstractItemView::PositionAtTop);
     }
